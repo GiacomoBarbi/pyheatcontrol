@@ -13,6 +13,12 @@ Features:
 from mpi4py import MPI
 import argparse
 import time
+import os
+import sys
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from io_utils import _import_sanity_check
 _import_sanity_check()
