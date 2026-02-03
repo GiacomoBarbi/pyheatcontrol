@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Outputs / artifacts
+resu/
+*.vtu
+*.pvtu
+*.pvd
+*.xdmf
+*.h5
+*.hdf5
+
+# Logs / temp
+*.log
+*.out
+*.err
+
+# Old experiments (keep on disk, not in git)
+old/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
