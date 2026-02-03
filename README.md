@@ -16,9 +16,11 @@ Time-dependent optimal control for the heat equation with **FEniCSx**:
 
 ## Quick run
 
+Run from the project root.
+
 Example (Dirichlet control on y=L, default target/constraint box):
 ```bash
-python3 main.py \
+python3 scripts/main.py \
   --n 5 --dt 20 --T-final 600 --L 0.1 \
   --k 0.15 --rho 1100 --c 1500 \
   --T-ambient 25 --T-cure 160 \
