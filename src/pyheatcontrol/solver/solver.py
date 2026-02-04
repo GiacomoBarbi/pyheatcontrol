@@ -6,16 +6,9 @@ import ufl
 from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetNormal
 from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
-from mesh_utils import (create_boundary_condition_function, create_boundary_facet_tags, mark_cells_in_boxes)
 from .forward import solve_forward_impl
 from .adjoint import solve_adjoint_impl
-from .gradient import (
-    _init_gradient_forms_impl,
-    compute_gradient_impl,
-    tgrad_impl,
-    update_multiplier_mu_impl,
-)
-
+from pyheatcontrol.mesh_utils import (create_boundary_condition_function, create_boundary_facet_tags, mark_cells_in_boxes)
 
 class TimeDepHeatSolver:
     """
@@ -458,7 +451,6 @@ class TimeDepHeatSolver:
         self.grad_q_neumann_time = None
         self.grad_u_distributed_time = None
         self.grad_u_dirichlet_time = None
-
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def solve_forward(self, q_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure):
         return solve_forward_impl(self, q_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
@@ -469,24 +461,14 @@ class TimeDepHeatSolver:
     def _init_gradient_forms(self):
         return _init_gradient_forms_impl(self)
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def compute_gradient(self, u_controls, Y_all, P_all,
-                        u_distributed_funcs_time,
-                        q_neumann_funcs_time,
-                        u_dirichlet_funcs_time):
-        return compute_gradient_impl(self,
-                                    u_controls, Y_all, P_all,
-                                    u_distributed_funcs_time,
-                                    q_neumann_funcs_time,
-                                    u_dirichlet_funcs_time)
+    def compute_gradient(self, u_controls, Y_all, P_all, u_distributed_funcs_time, q_neumann_funcs_time, u_dirichlet_funcs_time):
+        return compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_time, q_neumann_funcs_time, u_dirichlet_funcs_time)
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def tgrad(self, u):
         return tgrad_impl(self, u)
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def update_multiplier_mu(self, Y_all, sc_type, sc_lower, sc_upper,
-                            beta, sc_start_step, sc_end_step):
-        return update_multiplier_mu_impl(self,
-                                        Y_all, sc_type, sc_lower, sc_upper,
-                                        beta, sc_start_step, sc_end_step)
+    def update_multiplier_mu(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step):
+        return update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step)
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def _init_cost_forms(self, T_cure):
         """Inizializza form pre-compilate per compute_cost"""
@@ -672,16 +654,13 @@ class TimeDepHeatSolver:
                     self._u_dist_H1_ph1[j].x.scatter_forward()
                     J_reg_H1 += coef * assemble_scalar(self._dist_H1t_forms[j])
 
-
             # ---- Neumann
             for j in range(self.n_ctrl_neumann):
                 mid = self.neumann_marker_ids[j]
                 for m in range(self.num_steps - 1):
                     q0 = u_neumann_funcs_time[m][j]
                     q1 = u_neumann_funcs_time[m+1][j]
-                    J_reg_H1 += coef * assemble_scalar(
-                        form(((q1 - q0)**2) * self.ds_neumann(mid))
-                    )
+                    J_reg_H1 += coef * assemble_scalar(form(((q1 - q0)**2) * self.ds_neumann(mid)))
 
             # ---- Dirichlet (precompiled H1 in time)
             for j in range(self.n_ctrl_dirichlet):

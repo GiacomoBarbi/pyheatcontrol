@@ -1,4 +1,3 @@
-from gradcheck import check_gradient_fd
 import numpy as np
 import math
 import ufl
@@ -7,11 +6,11 @@ from petsc4py import PETSc
 
 from dolfinx.fem import Function, functionspace
 
-from parsing_utils import parse_box, parse_boundary_segment
-from mesh_utils import create_mesh
-from io_utils import save_visualization_output
-from solver import TimeDepHeatSolver
-from gradcheck import check_gradient_fd
+from pyheatcontrol.parsing_utils import parse_box, parse_boundary_segment
+from pyheatcontrol.mesh_utils import create_mesh
+from pyheatcontrol.io_utils import save_visualization_output
+from pyheatcontrol.solver import TimeDepHeatSolver
+from pyheatcontrol.gradcheck import check_gradient_fd
 
 
 def optimization_time_dependent(args):
@@ -227,6 +226,8 @@ def optimization_time_dependent(args):
     J_reg_L2_updated = None
     J_reg_H1_updated = None
 
+    sc_iter = -1
+
     # Moreau-Yosida loop
     for sc_iter in range(args.sc_maxit):
         # Y_all = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, T_cure)
@@ -236,7 +237,6 @@ def optimization_time_dependent(args):
 
             Y_all = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
             J, J_track, J_reg_L2, J_reg_H1 = solver.compute_cost(u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time, Y_all, T_cure)
-
 
             P_all = solver.solve_adjoint(Y_all, T_cure)
             grad = solver.compute_gradient(u_controls, Y_all, P_all, u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time)
@@ -296,10 +296,8 @@ def optimization_time_dependent(args):
 
             if args.check_grad and sc_iter == 0 and inner_iter == 0:
                 J0, fd, ad, rel = check_gradient_fd(
-                    solver, u_controls,
-                    u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time,
-                    T_cure, eps=args.fd_eps, seed=1, m0=0
-                )
+                    solver, u_controls, u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time,
+                    T_cure, eps=args.fd_eps, seed=1, m0=0)
 
                 if rank == 0:
                     print(f"[GRAD-CHECK] J={J0:.6e}  FD={fd:.6e}  AD={ad:.6e}  rel_err={rel:.3e}", flush=True)
@@ -307,8 +305,6 @@ def optimization_time_dependent(args):
 
                 import sys
                 sys.exit(0)
-
-
 
             if rank == 0:
                 print("[U-UPDATE] u_old       =", u_controls.copy())
@@ -363,20 +359,9 @@ def optimization_time_dependent(args):
             # Recompute STATE and COST after updating Function controls
             # (so the printed J matches the updated controls)
             # ============================================================
-            Y_all = solver.solve_forward(
-                u_neumann_funcs_time,
-                u_distributed_funcs_time,
-                u_dirichlet_funcs_time,
-                T_cure
-            )
+            Y_all = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
 
-            J, J_track, J_reg_L2, J_reg_H1 = solver.compute_cost(
-                u_distributed_funcs_time,
-                u_neumann_funcs_time,
-                u_dirichlet_funcs_time,
-                Y_all,
-                T_cure
-            )
+            J, J_track, J_reg_L2, J_reg_H1 = solver.compute_cost(u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time, Y_all, T_cure)
 
             Y_all_updated = Y_all
             J_updated = J
@@ -426,9 +411,7 @@ def optimization_time_dependent(args):
             print("[SC-DEBUG] len(Tcell DG0) =", len(Tcell.x.array), flush=True)
             print("[SC-DEBUG] len(Y_all[-1] V) =", len(Y_all[-1].x.array), flush=True)
 
-            print("[CHECK] Y_all[-1] on constraint Tmin/Tmax =",
-                float(Tcell.x.array[mask].min()), float(Tcell.x.array[mask].max()),
-                flush=True)
+            print("[CHECK] Y_all[-1] on constraint Tmin/Tmax =", float(Tcell.x.array[mask].min()), float(Tcell.x.array[mask].max()), flush=True)
 
         delta_mu, feas_inf = solver.update_multiplier_mu(Y_all, args.sc_type, args.sc_lower, args.sc_upper, args.beta, sc_start_step, sc_end_step)
         Y_mu = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
@@ -458,9 +441,7 @@ def optimization_time_dependent(args):
             break
 
     if rank == 0:
-        print("[CHECK-MU-FINAL] max muL at final =",
-            max(np.max(solver.mu_lower_time[m].x.array) for m in range(sc_start_step, sc_end_step+1)),
-            flush=True)
+        print("[CHECK-MU-FINAL] max muL at final =", max(np.max(solver.mu_lower_time[m].x.array) for m in range(sc_start_step, sc_end_step+1)), flush=True)
 
     # Final results
     Y_final_all = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
@@ -469,8 +450,7 @@ def optimization_time_dependent(args):
     if rank == 0:
         print("[FINAL RESULTS]")
         print(f"  SC iterations: {sc_iter + 1}")
-        print(f"  J_final = {J_final:.3e} (track={J_track_final:.3e}, "
-            f"L2={J_reg_L2_final:.3e}, H1={J_reg_H1_final:.3e})")
+        print(f"  J_final = {J_final:.3e} (track={J_track_final:.3e}, "f"L2={J_reg_L2_final:.3e}, H1={J_reg_H1_final:.3e})")
 
         n_ctrl_total = solver.n_ctrl_dirichlet + solver.n_ctrl_neumann + solver.n_ctrl_distributed
         print("\n  Control statistics (per control):")
@@ -548,7 +528,6 @@ def optimization_time_dependent(args):
                     print("  sampled mean(u) over Ωc:")
                     for (t, mu) in sample_means:
                         print(f"    t={t:8.1f}s  mean(u)={mu:+.6e}")
-
 
         # ---------- STATISTICHE ----------
         for ic in range(n_ctrl_total):
@@ -650,12 +629,9 @@ def optimization_time_dependent(args):
                 Vc = functionspace(domain, ("DG", 0))
                 Tcell_sc = Function(Vc); Tcell_sc.interpolate(T_final_diag)
                 mask = solver.sc_marker.astype(bool)
-                print("[CHECK-POST] T_final_diag on constraint Tmin/Tmax =",
-                    float(Tcell_sc.x.array[mask].min()), float(Tcell_sc.x.array[mask].max()),
-                    flush=True)
+                print("[CHECK-POST] T_final_diag on constraint Tmin/Tmax =", float(Tcell_sc.x.array[mask].min()), float(Tcell_sc.x.array[mask].max()), flush=True)
 
             zone_integral = assemble_scalar(form(T_cell * chi_dg0 * dx))
-
             chi_integral  = assemble_scalar(form(chi_dg0 * dx))
 
             if chi_integral > 1e-12:

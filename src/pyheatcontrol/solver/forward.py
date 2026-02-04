@@ -6,7 +6,7 @@ from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetN
 from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
-from mesh_utils import (
+from pyheatcontrol.mesh_utils import (
     create_boundary_condition_function,
     create_boundary_facet_tags,
     mark_cells_in_boxes,
