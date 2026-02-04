@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyheatcontrol"
+version = "0.1.0"
+description = "Time-dependent optimal control for the heat equation with FEniCSx."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "mpi4py",
+  "petsc4py",
+]
+
+[tool.setuptools]
+zip-safe = false
