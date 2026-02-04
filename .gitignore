@@ -27,3 +27,6 @@ old/
 *.swo
 .vscode/
 .idea/
+
+# Packaging
+*.egg-info/
