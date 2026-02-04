@@ -16,3 +16,6 @@ dependencies = [
 
 [tool.setuptools]
 zip-safe = false
+
+[tool.setuptools.packages.find]
+where = ["src"]

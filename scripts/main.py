@@ -20,10 +20,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from io_utils import _import_sanity_check
+from pyheatcontrol.io_utils import _import_sanity_check
+from pyheatcontrol.cli import build_parser
+from pyheatcontrol.optimization import optimization_time_dependent
 _import_sanity_check()
-from cli import build_parser
-from optimization import optimization_time_dependent
 
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
