@@ -97,7 +97,6 @@ def check_gradient_fd(
 
             return float(ad_val)
 
-
         # Applica base (per eccitare H1 spaziale su ΓD)
         apply_base()
 
@@ -175,14 +174,8 @@ def check_gradient_fd(
         raise RuntimeError("Nessun controllo disponibile (Dirichlet/Neumann/Distributed).")
 
     if rank == 0:
-        print(
-            f"[FD-CHECK] ctrl_type={ctrl_type}, zone={j0}, m0={m0}, ndofs={ndofs}, eps={eps}, seed={seed}",
-            flush=True,
-        )
-        print(
-            f"[FD-CHECK] alpha_u={solver.alpha_u:.6e}, gamma_u={solver.gamma_u:.6e}, beta_u={getattr(solver,'beta_u',0.0):.6e}, amp_base={amp_base}",
-            flush=True,
-        )
+        print(f"[FD-CHECK] ctrl_type={ctrl_type}, zone={j0}, m0={m0}, ndofs={ndofs}, eps={eps}, seed={seed}", flush=True)
+        print(f"[FD-CHECK] alpha_u={solver.alpha_u:.6e}, gamma_u={solver.gamma_u:.6e}, beta_u={getattr(solver,'beta_u',0.0):.6e}, amp_base={amp_base}", flush=True)
 
     try:
         # ============================================================

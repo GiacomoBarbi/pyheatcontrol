@@ -7,6 +7,7 @@ from dolfinx import mesh
 from dolfinx.fem import Function, functionspace
 from dolfinx.mesh import compute_midpoints
 from dolfinx.io import VTKFile
+from pyheatcontrol.logging_config import logger
 
 def _import_sanity_check():
     # minimal things we expect io_utils to have available
@@ -146,7 +147,7 @@ def save_visualization_output(
         a[:] = np.array(solver.sc_marker[:num_cells_local], dtype=PETSc.ScalarType)
     else:
         if rank == 0:
-            print("[WARN] sc_marker missing/mismatch: omega_sc set to 0 (not target)", flush=True)
+            logger.warning("sc_marker missing/mismatch: omega_sc set to 0 (not target)")
         a[:] = 0.0
     constraint_zone.x.scatter_forward()
 
@@ -173,7 +174,7 @@ def save_visualization_output(
         n_cons = int(np.round(constraint_zone.x.array[:num_cells_local].sum()))
         n_qn   = int(np.round(omega_qn.x.array[:num_cells_local].sum()))
         n_qd   = int(np.round(omega_qd.x.array[:num_cells_local].sum()))
-        print(f"[OUTPUT-DEBUG] marked cells: target={n_tgt}, control_dist={n_ctrl}, constraint={n_cons}, omega_qn={n_qn}, omega_qd={n_qd}")
+        logger.debug(f"marked cells: target={n_tgt}, control_dist={n_ctrl}, constraint={n_cons}, omega_qn={n_qn}, omega_qd={n_qd}")
 
     # --- Funzioni nodali (riusate) ---
     y_out    = Function(V_out, name="T")
@@ -196,8 +197,6 @@ def save_visualization_output(
     with VTKFile(comm, pvd_path, "w") as vtk:
         for m in timesteps_to_save:
             t = float(m * solver.dt)
-            # if rank == 0:
-                # print(f"[OUTPUT] VTK write m={m} t={t:g}")
 
             # --- Stato / Aggiunto (P2 -> P1) ---
             y_out.interpolate(Y_all[m])
@@ -289,5 +288,5 @@ def save_visualization_output(
             vtk.write_function(omega_qd, t)
 
     if rank == 0:
-        print(f"[OUTPUT] Saved: {pvd_path}")
-        print("[OUTPUT] Open solution.pvd in ParaView (time series + all fields).")
+        logger.info(f"Saved: {pvd_path}")
+        logger.info("Open solution.pvd in ParaView (time series + all fields).")

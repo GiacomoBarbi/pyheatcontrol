@@ -1,5 +1,3 @@
-# stessi import di forward (più o meno)
-
 import numpy as np
 from petsc4py import PETSc
 import ufl
@@ -8,7 +6,6 @@ from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetN
 from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
-
 def solve_adjoint_impl(self, Y_all, T_cure):
     """Backward solve for adjoint equation (tracking + (eventuale) vincolo di stato), trapezoidal in time.
     Tutto coerente in V (P2): niente .x.array per costruire il forcing.
@@ -16,7 +13,6 @@ def solve_adjoint_impl(self, Y_all, T_cure):
     v = TestFunction(self.V)
     dx = ufl.Measure("dx", domain=self.domain)
     n = FacetNormal(self.domain)
-
     dt_const = Constant(self.domain, PETSc.ScalarType(self.dt))
 
     # P_all[m] = p^m for m=0..N (N = num_steps). self.Nt = N+1
@@ -85,17 +81,11 @@ def solve_adjoint_impl(self, Y_all, T_cure):
         # trapezoidal weight
         weight = 0.5 if (m == 0 or m == self.num_steps) else 1.0
 
-        # if self.domain.comm.rank == 0:
-        #     print(f"[ADJ-DEBUG] m={m}, weight={weight}", flush=True)
-
         # Tracking forcing (UFL, in V) — costruiscilo SOLO se alpha_track != 0
         tracking_form = 0
         if abs(self.alpha_track) > 1e-30:
             for chi_t in self.chi_targets:
                 tracking_form += self.alpha_track * weight * self.dt * (y_current - T_cure) * chi_t * v * dx
-
-        # if self.domain.comm.rank == 0:
-        #     print(f"[ADJ-DEBUG pre state constr] m={m}, weight={weight}, y_mean={np.mean(y_current.x.array):.2f}", flush=True)
 
         # -------------------------
         # State-constraint forcing (NO interpolation, keep DG0)
@@ -110,13 +100,9 @@ def solve_adjoint_impl(self, Y_all, T_cure):
                 assemble_scalar(form((muL_m + muU_m) * chi_t * dx))
                 for chi_t in self.chi_targets
             ]
-            # print(f"[TEST-ADJ-SC] m={m}: int_SC={float(sc_int):.6e} | int_targets={[float(x) for x in tgt_ints]}", flush=True)
 
         tracking_form += (-weight) * muL_m * self.chi_sc * v * dx
         tracking_form += (+weight) * muU_m * self.chi_sc * v * dx
-
-        # if self.domain.comm.rank == 0:
-        #     print(f"[ADJ-DEBUG post state constr] m={m}, weight={weight}, y_mean={np.mean(y_current.x.array):.2f}", flush=True)
 
         # Adjoint RHS: (rho_c/dt) * p^{m+1} + forcing
         L_adj = (self.rho_c / dt_const) * p_next * v * dx + tracking_form

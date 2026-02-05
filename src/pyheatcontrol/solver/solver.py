@@ -8,7 +8,9 @@ from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 from .forward import solve_forward_impl
 from .adjoint import solve_adjoint_impl
+from .gradient import _init_gradient_forms_impl, compute_gradient_impl, tgrad_impl, update_multiplier_mu_impl
 from pyheatcontrol.mesh_utils import (create_boundary_condition_function, create_boundary_facet_tags, mark_cells_in_boxes)
+from pyheatcontrol.logging_config import logger
 
 class TimeDepHeatSolver:
     """
@@ -57,7 +59,7 @@ class TimeDepHeatSolver:
         self._T_cell = Function(self.Vc)  # DG0
 
         if self.domain.comm.rank == 0:
-            print("[DEBUG-SOLVER] constraint_boxes received =", constraint_boxes, flush=True)
+            logger.debug(f"constraint_boxes received = {constraint_boxes}")
 
         # -------------------------
         # Dirichlet controls
@@ -116,10 +118,8 @@ class TimeDepHeatSolver:
             unique_facets_rev, first_idx_rev = np.unique(facets[::-1], return_index=True)
             last_idx = (len(facets) - 1) - first_idx_rev
             last_idx_sorted = np.sort(last_idx)
-
             facets_u = facets[last_idx_sorted]
             values_u = values[last_idx_sorted]
-
             self.dirichlet_facet_tags = meshtags(domain, fdim, facets_u, values_u)
 
         # -------------------------
@@ -209,11 +209,11 @@ class TimeDepHeatSolver:
 
         # Subito dopo il loop che crea M_neumann
         if self.domain.comm.rank == 0 and self.n_ctrl_neumann > 0:
-            print(f"[DEBUG-M_NEUMANN] Number of Neumann zones: {len(self.M_neumann)}")
+            logger.debug(f"Number of Neumann zones: {len(self.M_neumann)}")
             for i, M_i in enumerate(self.M_neumann):
                 # Get matrix norm
                 M_norm = M_i.norm()
-                print(f"  Zone {i}: Matrix norm = {M_norm:.6e}", flush=True)
+                logger.debug(f"  Zone {i}: Matrix norm = {M_norm:.6e}")
         # -------------------------------------------------
         # Dirichlet control functions (P2) - DISTRIBUTED ON BOUNDARY
         # -------------------------------------------------
@@ -229,7 +229,7 @@ class TimeDepHeatSolver:
 
         if self.domain.comm.rank == 0 and self.n_ctrl_dirichlet > 0:
             for i, dofs in enumerate(self.dirichlet_dofs):
-                print(f"[INIT] Dirichlet control zone {i+1}: {len(dofs)} DOFs on boundary", flush=True)
+                logger.debug(f"Dirichlet control zone {i+1}: {len(dofs)} DOFs on boundary")
 
         # -------------------------------------------------
         # Mass matrices for Dirichlet control gradients (restricted to ΓD)
@@ -315,7 +315,7 @@ class TimeDepHeatSolver:
             self.distributed_dofs.append(dofs_unique)
 
             if self.domain.comm.rank == 0:
-                print(f"[INIT] Distributed control zone {len(self.distributed_dofs)}: {len(dofs_unique)} DOFs")
+                logger.debug(f"Distributed control zone {len(self.distributed_dofs)}: {len(dofs_unique)} DOFs")
 
         # ========== STEP 2: Crea mass matrices DOPO (ora distributed_dofs è pieno) ==========
         self.M_distributed = []
@@ -391,19 +391,18 @@ class TimeDepHeatSolver:
         self.chi_sc.interpolate(chi_sc_dg0)
 
         if self.domain.comm.rank == 0:
-            print(f"[INIT] Constraint zone: {int(np.sum(self.sc_marker))} cells marked", flush=True)
+            logger.debug(f"Constraint zone: {int(np.sum(self.sc_marker))} cells marked")
             mt = [assemble_scalar(form(chi*dx)) for chi in self.chi_targets]
             msc = assemble_scalar(form(self.chi_sc*dx))
-            print("[DEBUG-MEAS] meas(targets) =", mt, flush=True)
-            print("[DEBUG-MEAS] meas(constraint) =", float(msc), flush=True)
+            logger.debug(f"meas(targets) = {mt}")
+            logger.debug(f"meas(constraint) = {float(msc)}")
             tgt_union = np.zeros_like(self.sc_marker, dtype=bool)
             for m in self.target_markers:
                 tgt_union |= m
             overlap = int(np.sum(tgt_union & self.sc_marker))
-            print(
-                f"[TEST-ZONES] cells(target_union)={int(np.sum(tgt_union))} "
-                f"cells(sc)={int(np.sum(self.sc_marker))} overlap={overlap}",
-                flush=True
+            logger.debug(
+                f"cells(target_union)={int(np.sum(tgt_union))} "
+                f"cells(sc)={int(np.sum(self.sc_marker))} overlap={overlap}"
             )
 
         # Multipliers are now time-dependent (one per time step)
@@ -587,8 +586,7 @@ class TimeDepHeatSolver:
         self.last_J_track_steps = J_track_steps.copy()
 
         if self.domain.comm.rank == 0:
-            print("[J-DEBUG] J_track_sum_check:",
-                f"{np.sum(J_track_steps):.6e}  vs  J_track={J_track:.6e}", flush=True)
+            logger.debug(f"J_track_sum_check: {np.sum(J_track_steps):.6e}  vs  J_track={J_track:.6e}")
 
         # ============================================================
         # L2 spatial regularization
@@ -674,6 +672,6 @@ class TimeDepHeatSolver:
         # ============================================================
         J_total = J_track + J_reg_L2 + J_reg_H1
         if self.domain.comm.rank == 0:
-            print(f"[COST-DEBUG] J_total={J_total:.12e} J_track={J_track:.12e} J_regL2={J_reg_L2:.12e} J_regH1={J_reg_H1:.12e}", flush=True)
+            logger.debug(f"J_total={J_total:.12e} J_track={J_track:.12e} J_regL2={J_reg_L2:.12e} J_regH1={J_reg_H1:.12e}")
 
         return J_total, J_track, J_reg_L2, J_reg_H1

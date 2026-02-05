@@ -6,20 +6,11 @@ from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetN
 from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
-from pyheatcontrol.mesh_utils import (
-    create_boundary_condition_function,
-    create_boundary_facet_tags,
-    mark_cells_in_boxes,
-)
+from pyheatcontrol.mesh_utils import (create_boundary_condition_function, create_boundary_facet_tags, mark_cells_in_boxes)
+from pyheatcontrol.logging_config import logger
 
+def solve_forward_impl(self, q_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure):
 
-
-def solve_forward_impl(self,
-                       q_neumann_funcs_time,
-                       u_distributed_funcs_time,
-                       u_dirichlet_funcs_time,
-                       T_cure):
-    # incolla QUI il corpo del vecchio solve_forward
         T_old = Function(self.V)
         v = TestFunction(self.V)
         dt_c = Constant(self.domain, PETSc.ScalarType(self.dt))
@@ -97,17 +88,11 @@ def solve_forward_impl(self,
                 uD_bc[i].x.scatter_forward()
 
                 if step == 0 and self.domain.comm.rank == 0 and i == 0:
-                    print(f"[BC-DEBUG] uD_time.x.array[dofs_i] = {uD_time.x.array[dofs_i][:5]}")
+                    logger.debug(f"uD_time.x.array[dofs_i] = {uD_time.x.array[dofs_i][:5]}")
                 if step == 0 and self.domain.comm.rank == 0 and self.n_ctrl_dirichlet > 0:
                     dofs0 = self.dirichlet_dofs[0]
-                    print("[BC-DEBUG new] uD_bc[0] on ΓD min/max =",
-                      float(uD_bc[0].x.array[dofs0].min()),
-                      float(uD_bc[0].x.array[dofs0].max()),
-                      flush=True)
+                    logger.debug(f"uD_bc[0] on ΓD min/max = {float(uD_bc[0].x.array[dofs0].min())}, {float(uD_bc[0].x.array[dofs0].max())}")
 
-            # if step == 0 and self.domain.comm.rank == 0:
-            #     print(f"[FWD-BC-DEBUG] bc_f on ΓD = {bc_f.x.array[dofs_i]}", flush=True)
-            #     print(f"[FWD-BC-DEBUG] T after solve, T on ΓD = {T.x.array[dofs_i]}", flush=True)
             # -------------------------
             # Neumann control (P2) - keep only boundary DOFs of each segment
             # -------------------------
@@ -126,27 +111,24 @@ def solve_forward_impl(self,
                 self.q_neumann_funcs[i].x.scatter_forward()
                 # DEBUG
                 if step == 0 and i == 0 and self.domain.comm.rank == 0:
-                    print(f"[FWD-DEBUG] step={step}, q_func min/max (global) = "
+                    logger.debug(f"step={step}, q_func min/max (global) = "
                         f"{self.q_neumann_funcs[i].x.array.min():.6e}, "
-                        f"{self.q_neumann_funcs[i].x.array.max():.6e}", flush=True)
-                    print(f"[FWD-DEBUG] step={step}, q_func min/max (on Γ) = "
+                        f"{self.q_neumann_funcs[i].x.array.max():.6e}")
+                    logger.debug(f"step={step}, q_func min/max (on Γ) = "
                         f"{self.q_neumann_funcs[i].x.array[dofs_i].min():.6e}, "
-                        f"{self.q_neumann_funcs[i].x.array[dofs_i].max():.6e}", flush=True)
+                        f"{self.q_neumann_funcs[i].x.array[dofs_i].max():.6e}")
 
             # (optional debug: only first step)
             if step == 0 and self.domain.comm.rank == 0 and self.n_ctrl_neumann > 0:
                 dofs0 = self.neumann_dofs[0]
                 q0 = self.q_neumann_funcs[0].x.array
-                print(
-                    "[CHECK-NEUMANN] step=0 q_on_Gamma min/max =",
-                    float(q0[dofs0].min()), float(q0[dofs0].max()),
-                    " | q_global min/max =",
-                    float(q0.min()), float(q0.max()),
-                    flush=True
+                logger.debug(
+                    f"step=0 q_on_Gamma min/max = {float(q0[dofs0].min())}, {float(q0[dofs0].max())} "
+                    f"| q_global min/max = {float(q0.min())}, {float(q0.max())}"
                 )
                 mid0 = self.neumann_marker_ids[0]
                 q_int = assemble_scalar(form(self.q_neumann_funcs[0] * self.ds_neumann(mid0)))
-                print("[CHECK-NEUMANN] int_Gamma q ds =", float(q_int), flush=True)
+                logger.debug(f"int_Gamma q ds = {float(q_int)}")
 
             # -------------------------
             # RHS (placeholders update + assemble precompiled form)
@@ -180,13 +162,13 @@ def solve_forward_impl(self,
 
             if step == 0 and self.domain.comm.rank == 0 and self.n_ctrl_dirichlet > 0:
                 dofs_check = self.dirichlet_dofs[0]
-                print(f"[SOLVE-DEBUG] T after solve on ΓD = {T.x.array[dofs_check][:5]}")
+                logger.debug(f"T after solve on ΓD = {T.x.array[dofs_check][:5]}")
 
             if step == self.num_steps - 1 and self.domain.comm.rank == 0:
-                print(f"[DEBUG-T] global min/max: {float(T.x.array.min()):.12e} {float(T.x.array.max()):.12e}", flush=True)
+                logger.debug(f"T global min/max: {float(T.x.array.min()):.12e} {float(T.x.array.max()):.12e}")
                 if self.n_ctrl_dirichlet > 0:
                     dofsD = self.dirichlet_dofs[0]
-                    print(f"[DEBUG-T] on ΓD min/max: {float(T.x.array[dofsD].min()):.12e} {float(T.x.array[dofsD].max()):.12e}", flush=True)
+                    logger.debug(f"T on ΓD min/max: {float(T.x.array[dofsD].min()):.12e} {float(T.x.array[dofsD].max()):.12e}")
 
             T.x.petsc_vec.copy(T_old.x.petsc_vec)
             T_old.x.scatter_forward()

@@ -30,3 +30,5 @@ old/
 
 # Packaging
 *.egg-info/
+.ruff_cache/
+

@@ -19,3 +19,6 @@ zip-safe = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.scripts]
+pyheatcontrol = "pyheatcontrol.cli:main"

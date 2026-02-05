@@ -5,7 +5,7 @@ from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetN
 
 from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
-
+from pyheatcontrol.logging_config import logger
 
 def _init_gradient_forms_impl(self):
     """Inizializza form pre-compilate per compute_gradient"""
@@ -87,10 +87,7 @@ def _init_gradient_forms_impl(self):
     self._gradient_forms_initialized = True
 
 
-def compute_gradient_impl(self, u_controls, Y_all, P_all,
-                          u_distributed_funcs_time,
-                          q_neumann_funcs_time,
-                          u_dirichlet_funcs_time):
+def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_time, q_neumann_funcs_time, u_dirichlet_funcs_time):
     """
     Compute gradient via adjoint.
     - Neumann control è P2 in spazio e time-dependent: self.grad_q_neumann_time[m][i]
@@ -192,7 +189,7 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all,
                 if self.domain.comm.rank == 0 and m == 0:
                     h1_norm = b_reg_H1.norm()
                     l2_norm = b_reg_L2.norm() if self.alpha_u > 1e-16 else 0.0
-                    print(f"[H1-DEBUG] m={m}, i={i}: ||b_L2||={l2_norm:.3e}, ||b_H1||={h1_norm:.3e}, ratio={h1_norm/max(l2_norm,1e-16):.3e}", flush=True)
+                    logger.debug(f"H1: m={m}, i={i}: ||b_L2||={l2_norm:.3e}, ||b_H1||={h1_norm:.3e}, ratio={h1_norm/max(l2_norm,1e-16):.3e}")
 
             # Solve Riesz map: M_dirichlet * gD = b_total
             gD = self.grad_u_dirichlet_time[m][i]
@@ -212,18 +209,12 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all,
 
             if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps - 1):
                 reg_type = "L2" if self.dirichlet_spatial_reg == "L2" else f"H1(α={self.alpha_u:.1e},β={self.beta_u:.1e})"
-                print(f"[GRAD-DIRICHLET-{reg_type}][m={m}] on ΓD min/max:",
-                    float(gD.x.array[dofs_i].min()), float(gD.x.array[dofs_i].max()),
-                    flush=True)
+                logger.debug(f"GRAD-DIRICHLET-{reg_type} m={m} on ΓD min/max: {float(gD.x.array[dofs_i].min())}, {float(gD.x.array[dofs_i].max())}")
             if self.domain.comm.rank == 0 and m == 0:
                 expected_raw = self.alpha_u * self.dt * uD_current.x.array[dofs_i].mean()
                 actual_riesz = gD.x.array[dofs_i].mean()
                 b_norm = float(b_total.norm())
-                print(f"[DIRICHLET-GRAD-DEBUG] m={m}")
-                print(f"  uD mean on ΓD = {uD_current.x.array[dofs_i].mean():.6e}")
-                print(f"  Expected raw gradient (α*dt*uD) = {expected_raw:.6e}")
-                print(f"  Actual Riesz gradient mean = {actual_riesz:.6e}")
-                print(f"  ||b_total|| = {b_norm:.6e}")
+                logger.debug(f"DIRICHLET-GRAD m={m}: uD mean={uD_current.x.array[dofs_i].mean():.6e}, "f"expected={expected_raw:.6e}, actual={actual_riesz:.6e}, ||b||={b_norm:.6e}")
 
         # ---- Neumann controls (P2), gradient with proper L2(Γ) integral ----
         for i in range(self.n_ctrl_neumann):
@@ -257,7 +248,7 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all,
             gq.x.scatter_forward()
 
             if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps - 1):
-                print(f"[GRAD-NEUMANN][m={m}] on Γ min/max:", float(gq.x.array[dofs_i].min()), float(gq.x.array[dofs_i].max()), flush=True)
+                logger.debug(f"GRAD-NEUMANN m={m} on Γ min/max: {float(gq.x.array[dofs_i].min())}, {float(gq.x.array[dofs_i].max())}")
 
             idx += 1
 
@@ -292,7 +283,7 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all,
             gD.x.scatter_forward()
 
             if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps - 1):
-                print(f"[GRAD-UD][m={m}] min/max:", float(gD.x.array.min()), float(gD.x.array.max()), flush=True)
+                logger.debug(f"GRAD-UD m={m} min/max: {float(gD.x.array.min())}, {float(gD.x.array.max())}")
     # ============================================================
     # H1 temporal regularization for spatial controls
     # ============================================================
@@ -477,9 +468,7 @@ def tgrad_impl(self, u):
     P = I - ufl.outer(n, n)
     return P * ufl.grad(u)
 
-
-def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper,
-                              beta, sc_start_step, sc_end_step):
+def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step):
     """
     Moreau–Yosida update for PATH constraints over time window [sc_start_step, sc_end_step].
     Works in DG0 (cell-wise) using self.sc_marker.
@@ -566,19 +555,11 @@ def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper,
             muL_max = float(np.max(muL_new)) if muL_new.size else 0.0
             muU_max = float(np.max(muU_new)) if muU_new.size else 0.0
             t_m = m * self.dt
-            print(
-                f"[SC-PATH] t={t_m:.1f}s (m={m}): T∈[{Tmin_sc:.2f}, {Tmax_sc:.2f}]°C, "
-                f"violL={vL:.2e}, violU={vU:.2e}, μL_max={muL_max:.2e}, μU_max={muU_max:.2e}",
-                flush=True
-            )
+            logger.debug(f"SC-PATH t={t_m:.1f}s (m={m}): T∈[{Tmin_sc:.2f}, {Tmax_sc:.2f}]°C, violL={vL:.2e}, violU={vU:.2e}, μL_max={muL_max:.2e}, μU_max={muU_max:.2e}")
 
     # Summary
     if self.domain.comm.rank == 0:
-        print(
-            f"[SC-PATH-SUMMARY] Window steps=[{sc_start_step},{sc_end_step}], "
-            f"max_violation={feas_inf_max:.2e}, max_Δμ={delta_mu_max:.2e}",
-            flush=True
-        )
+        logger.debug(f"SC-PATH-SUMMARY Window steps=[{sc_start_step},{sc_end_step}], max_violation={feas_inf_max:.2e}, max_Δμ={delta_mu_max:.2e}")
         Vc = functionspace(self.domain, ("DG", 0))
         mask = self.sc_marker.astype(bool)
 
@@ -600,10 +581,6 @@ def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper,
                 max_out_L = max(max_out_L, float(np.max(aL[~mask])) if np.any(~mask) else 0.0)
                 max_out_U = max(max_out_U, float(np.max(aU[~mask])) if np.any(~mask) else 0.0)
 
-        print(
-            f"[TEST-MU] max_in:  muL={max_in_L:.3e} muU={max_in_U:.3e} | "
-            f"max_out: muL={max_out_L:.3e} muU={max_out_U:.3e}",
-            flush=True
-        )
+        logger.debug(f"TEST-MU max_in: muL={max_in_L:.3e} muU={max_in_U:.3e} | max_out: muL={max_out_L:.3e} muU={max_out_U:.3e}")
 
     return delta_mu_max, feas_inf_max
