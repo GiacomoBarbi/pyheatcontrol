@@ -19,12 +19,13 @@ def create_mesh(n, L):
 
 
 def mark_cells_in_boxes(domain, boxes, L):
-    """Marca celle in boxes"""
+    """Marca celle in boxes (solo celle owned, non ghost)"""
     V0 = functionspace(domain, ("DG", 0))
     num_cells = V0.dofmap.index_map.size_local
     x_cells = domain.geometry.x
     cell_dofmap = domain.geometry.dofmap
-    cell_centers = x_cells[cell_dofmap].mean(axis=1)
+    # Calcola centri solo per le celle owned (prime num_cells righe)
+    cell_centers = x_cells[cell_dofmap[:num_cells]].mean(axis=1)
     marker = np.zeros(num_cells, dtype=bool)
 
     for xmin, xmax, ymin, ymax in boxes:

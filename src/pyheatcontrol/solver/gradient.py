@@ -107,7 +107,6 @@ def compute_gradient_impl(
     - Distributed control è P2 in spazio e time-dependent: self.grad_u_distributed_time[m][i]
     (NOTA: non entra in u_controls, quindi NON incrementare idx per lui)
     """
-
     grad = np.zeros((self.n_ctrl_spatial, self.num_steps))
     # Inizializza forms se non già fatto
     if not hasattr(self, "_gradient_forms_initialized"):
@@ -244,12 +243,13 @@ def compute_gradient_impl(
                 logger.debug(
                     f"GRAD-DIRICHLET-{reg_type} m={m} on ΓD min/max: {float(gD.x.array[dofs_i].min())}, {float(gD.x.array[dofs_i].max())}"
                 )
+            # b_total.norm() is MPI collective - all ranks must call
+            b_norm = float(b_total.norm()) if m == 0 else 0.0
             if self.domain.comm.rank == 0 and m == 0:
                 expected_raw = (
                     self.alpha_u * self.dt * uD_current.x.array[dofs_i].mean()
                 )
                 actual_riesz = gD.x.array[dofs_i].mean()
-                b_norm = float(b_total.norm())
                 logger.debug(
                     f"DIRICHLET-GRAD m={m}: uD mean={uD_current.x.array[dofs_i].mean():.6e}, "
                     f"expected={expected_raw:.6e}, actual={actual_riesz:.6e}, ||b||={b_norm:.6e}"
@@ -581,7 +581,6 @@ def compute_gradient_impl(
 
                     gD.x.array[:] += temp.x.array[:]
                     gD.x.scatter_forward()
-
     return grad
 
 
@@ -615,7 +614,9 @@ def update_multiplier_mu_impl(
 
     # Mask of constrained cells in DG0
     chi_sc_cell = Function(Vc)
-    chi_sc_cell.x.array[:] = self.sc_marker.astype(PETSc.ScalarType)
+    n_local = Vc.dofmap.index_map.size_local
+    chi_sc_cell.x.array[:n_local] = self.sc_marker.astype(PETSc.ScalarType)
+    chi_sc_cell.x.scatter_forward()
     mask = chi_sc_cell.x.array
 
     delta_mu_max = 0.0
@@ -690,37 +691,36 @@ def update_multiplier_mu_impl(
         logger.debug(
             f"SC-PATH-SUMMARY Window steps=[{sc_start_step},{sc_end_step}], max_violation={feas_inf_max:.2e}, max_Δμ={delta_mu_max:.2e}"
         )
-        Vc = functionspace(self.domain, ("DG", 0))
-        mask = self.sc_marker.astype(bool)
 
-        max_out_L = 0.0
-        max_out_U = 0.0
-        max_in_L = 0.0
-        max_in_U = 0.0
-
-        for m in range(sc_start_step, sc_end_step + 1):
-            muL = Function(Vc)
-            muL.interpolate(self.mu_lower_time[m])
-            muU = Function(Vc)
-            muU.interpolate(self.mu_upper_time[m])
-
-            aL = muL.x.array
-            aU = muU.x.array
-
-            if aL.size:
-                max_in_L = max(
-                    max_in_L, float(np.max(aL[mask])) if np.any(mask) else 0.0
-                )
-                max_in_U = max(
-                    max_in_U, float(np.max(aU[mask])) if np.any(mask) else 0.0
-                )
-                max_out_L = max(
-                    max_out_L, float(np.max(aL[~mask])) if np.any(~mask) else 0.0
-                )
-                max_out_U = max(
-                    max_out_U, float(np.max(aU[~mask])) if np.any(~mask) else 0.0
-                )
-
+    # MPI collective operations - all ranks must call
+    Vc_summary = functionspace(self.domain, ("DG", 0))
+    mask = self.sc_marker.astype(bool)
+    n_local = Vc_summary.dofmap.index_map.size_local
+    max_out_L = 0.0
+    max_out_U = 0.0
+    max_in_L = 0.0
+    max_in_U = 0.0
+    for m in range(sc_start_step, sc_end_step + 1):
+        muL = Function(Vc_summary)
+        muL.interpolate(self.mu_lower_time[m])
+        muU = Function(Vc_summary)
+        muU.interpolate(self.mu_upper_time[m])
+        aL = muL.x.array[:n_local]
+        aU = muU.x.array[:n_local]
+        if aL.size:
+            max_in_L = max(
+                max_in_L, float(np.max(aL[mask])) if np.any(mask) else 0.0
+            )
+            max_in_U = max(
+                max_in_U, float(np.max(aU[mask])) if np.any(mask) else 0.0
+            )
+            max_out_L = max(
+                max_out_L, float(np.max(aL[~mask])) if np.any(~mask) else 0.0
+            )
+            max_out_U = max(
+                max_out_U, float(np.max(aU[~mask])) if np.any(~mask) else 0.0
+            )
+    if self.domain.comm.rank == 0:
         logger.debug(
             f"TEST-MU max_in: muL={max_in_L:.3e} muU={max_in_U:.3e} | max_out: muL={max_out_L:.3e} muU={max_out_U:.3e}"
         )

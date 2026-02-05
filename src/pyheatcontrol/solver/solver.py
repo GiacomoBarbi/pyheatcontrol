@@ -252,12 +252,13 @@ class TimeDepHeatSolver:
             self.q_neumann_funcs.append(q)
 
         # Subito dopo il loop che crea M_neumann
-        if self.domain.comm.rank == 0 and self.n_ctrl_neumann > 0:
-            logger.debug(f"Number of Neumann zones: {len(self.M_neumann)}")
-            for i, M_i in enumerate(self.M_neumann):
-                # Get matrix norm
-                M_norm = M_i.norm()
-                logger.debug(f"  Zone {i}: Matrix norm = {M_norm:.6e}")
+        # M_i.norm() is MPI collective - all ranks must call
+        if self.n_ctrl_neumann > 0:
+            neumann_norms = [M_i.norm() for M_i in self.M_neumann]
+            if self.domain.comm.rank == 0:
+                logger.debug(f"Number of Neumann zones: {len(self.M_neumann)}")
+                for i, M_norm in enumerate(neumann_norms):
+                    logger.debug(f"  Zone {i}: Matrix norm = {M_norm:.6e}")
         # -------------------------------------------------
         # Dirichlet control functions (P2) - DISTRIBUTED ON BOUNDARY
         # -------------------------------------------------
@@ -344,10 +345,12 @@ class TimeDepHeatSolver:
         self.chi_distributed_V = []
         if self.n_ctrl_distributed > 0:
             V_dg0 = functionspace(domain, ("DG", 0))
+            n_local = V_dg0.dofmap.index_map.size_local
             for marker in self.distributed_markers:
                 chi_dg0 = Function(V_dg0)
                 chi_dg0.x.array[:] = 0.0
-                chi_dg0.x.array[marker] = 1.0
+                chi_dg0.x.array[:n_local][marker] = 1.0
+                chi_dg0.x.scatter_forward()
                 chi = Function(self.V)
                 chi.interpolate(chi_dg0)
                 self.chi_distributed_V.append(chi)
@@ -412,8 +415,11 @@ class TimeDepHeatSolver:
 
         self.chi_targets = []
         for marker in self.target_markers:
-            chi_dg0 = Function(functionspace(domain, ("DG", 0)))
-            chi_dg0.x.array[:] = marker.astype(PETSc.ScalarType)
+            V_dg0 = functionspace(domain, ("DG", 0))
+            chi_dg0 = Function(V_dg0)
+            n_local = V_dg0.dofmap.index_map.size_local
+            chi_dg0.x.array[:n_local] = marker.astype(PETSc.ScalarType)
+            chi_dg0.x.scatter_forward()
             chi = Function(self.V0)
             chi.interpolate(chi_dg0)
             self.chi_targets.append(chi)
@@ -437,17 +443,20 @@ class TimeDepHeatSolver:
             self.sc_marker |= m
 
         self.chi_sc_cell = Function(self.Vc)
-        self.chi_sc_cell.x.array[:] = self.sc_marker.astype(PETSc.ScalarType)
+        n_local = self.Vc.dofmap.index_map.size_local
+        self.chi_sc_cell.x.array[:n_local] = self.sc_marker.astype(PETSc.ScalarType)
         self.chi_sc_cell.x.scatter_forward()
         chi_sc_dg0 = Function(functionspace(domain, ("DG", 0)))
-        chi_sc_dg0.x.array[:] = self.sc_marker.astype(PETSc.ScalarType)
+        chi_sc_dg0.x.array[:n_local] = self.sc_marker.astype(PETSc.ScalarType)
+        chi_sc_dg0.x.scatter_forward()
         self.chi_sc = Function(self.V0)
         self.chi_sc.interpolate(chi_sc_dg0)
 
+        # assemble_scalar is MPI collective - all ranks must participate
+        mt = [assemble_scalar(form(chi * dx)) for chi in self.chi_targets]
+        msc = assemble_scalar(form(self.chi_sc * dx))
         if self.domain.comm.rank == 0:
             logger.debug(f"Constraint zone: {int(np.sum(self.sc_marker))} cells marked")
-            mt = [assemble_scalar(form(chi * dx)) for chi in self.chi_targets]
-            msc = assemble_scalar(form(self.chi_sc * dx))
             logger.debug(f"meas(targets) = {mt}")
             logger.debug(f"meas(constraint) = {float(msc)}")
             tgt_union = np.zeros_like(self.sc_marker, dtype=bool)

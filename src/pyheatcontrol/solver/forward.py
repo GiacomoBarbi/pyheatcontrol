@@ -10,7 +10,6 @@ from pyheatcontrol.logging_config import logger
 def solve_forward_impl(
     self, q_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure
 ):
-
     T_old = Function(self.V)
     v = TestFunction(self.V)
     dt_c = Constant(self.domain, PETSc.ScalarType(self.dt))
@@ -125,18 +124,20 @@ def solve_forward_impl(
                 )
 
         # (optional debug: only first step)
-        if step == 0 and self.domain.comm.rank == 0 and self.n_ctrl_neumann > 0:
-            dofs0 = self.neumann_dofs[0]
-            q0 = self.q_neumann_funcs[0].x.array
-            logger.debug(
-                f"step=0 q_on_Gamma min/max = {float(q0[dofs0].min())}, {float(q0[dofs0].max())} "
-                f"| q_global min/max = {float(q0.min())}, {float(q0.max())}"
-            )
-            mid0 = self.neumann_marker_ids[0]
-            q_int = assemble_scalar(
-                form(self.q_neumann_funcs[0] * self.ds_neumann(mid0))
-            )
-            logger.debug(f"int_Gamma q ds = {float(q_int)}")
+        if step == 0 and self.n_ctrl_neumann > 0:
+                dofs0 = self.neumann_dofs[0]
+                q0 = self.q_neumann_funcs[0].x.array
+                mid0 = self.neumann_marker_ids[0]
+                # assemble_scalar is MPI collective - all ranks must call it
+                q_int = assemble_scalar(
+                    form(self.q_neumann_funcs[0] * self.ds_neumann(mid0))
+                )
+                if self.domain.comm.rank == 0:
+                    logger.debug(
+                        f"step=0 q_on_Gamma min/max = {float(q0[dofs0].min())}, {float(q0[dofs0].max())} "
+                        f"| q_global min/max = {float(q0.min())}, {float(q0.max())}"
+                    )
+                    logger.debug(f"int_Gamma q ds = {float(q_int)}")
 
         # -------------------------
         # RHS (placeholders update + assemble precompiled form)

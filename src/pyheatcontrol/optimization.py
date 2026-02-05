@@ -274,7 +274,6 @@ def optimization_time_dependent(args):
 
     # Moreau-Yosida loop
     for sc_iter in range(args.sc_maxit):
-        # Y_all = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, T_cure)
 
         # Inner optimization
         for inner_iter in range(args.inner_maxit):
@@ -366,7 +365,6 @@ def optimization_time_dependent(args):
                 import sys
 
                 sys.exit(0)
-
             if rank == 0:
                 logger.debug(f"u_old = {u_controls.copy()}")
                 logger.debug(f"grad = {grad.copy()}")
@@ -403,7 +401,6 @@ def optimization_time_dependent(args):
                         grad_sq += np.sum(gD.x.array[dofs_j] ** 2)
 
             grad_norm = np.sqrt(grad_sq)
-
             # ============================================================
             # Recompute STATE and COST after updating Function controls
             # (so the printed J matches the updated controls)
@@ -421,7 +418,6 @@ def optimization_time_dependent(args):
                 Y_all,
                 T_cure,
             )
-
             # if rank == 0 and inner_iter % 5 == 0:
             if rank == 0:
                 if grad.size > 0:
@@ -442,22 +438,22 @@ def optimization_time_dependent(args):
                     print(f"  [Inner converged at iter {inner_iter}]")
                 break
 
+        # functionspace/Function/interpolate are MPI collective - all ranks must call
+        Vc = functionspace(domain, ("DG", 0))
+        Tcell = Function(Vc)
+        Tcell.interpolate(Y_all[-1])
         if rank == 0:
-            Vc = functionspace(domain, ("DG", 0))
-            Tcell = Function(Vc)
-            Tcell.interpolate(Y_all[-1])
             mask = solver.sc_marker.astype(bool)
+            n_local = len(mask)
             logger.debug(f"len(sc_marker) = {len(solver.sc_marker)}")
             logger.debug(f"len(Tcell DG0) = {len(Tcell.x.array)}")
             logger.debug(f"len(Y_all[-1] V) = {len(Y_all[-1].x.array)}")
-
             if np.any(mask):
                 logger.debug(
-                    f"Y_all[-1] on constraint Tmin/Tmax = {float(Tcell.x.array[mask].min())}, {float(Tcell.x.array[mask].max())}"
+                    f"Y_all[-1] on constraint Tmin/Tmax = {float(Tcell.x.array[:n_local][mask].min())}, {float(Tcell.x.array[:n_local][mask].max())}"
                 )
             else:
                 logger.debug("No cells in constraint mask (constraint zone empty).")
-
         if not has_constraints:
             delta_mu, feas_inf = 0.0, 0.0
             if domain.comm.rank == 0:
@@ -472,7 +468,6 @@ def optimization_time_dependent(args):
                 sc_start_step,
                 sc_end_step,
             )
-
         Y_mu = solver.solve_forward(
             u_neumann_funcs_time,
             u_distributed_funcs_time,
@@ -520,7 +515,6 @@ def optimization_time_dependent(args):
             )
         else:
             logger.debug("CHECK-MU-FINAL no constraints -> skipping mu check")
-
     # Final results
     Y_final_all = solver.solve_forward(
         u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure
@@ -532,11 +526,10 @@ def optimization_time_dependent(args):
         Y_final_all,
         T_cure,
     )
-
-    if rank == 0:
-        n_ctrl_total = (
+    n_ctrl_total = (
             solver.n_ctrl_dirichlet + solver.n_ctrl_neumann + solver.n_ctrl_distributed
         )
+    if rank == 0:
 
         print("[FINAL RESULTS]")
         print(f"  SC iterations: {sc_iter + 1}")
@@ -544,81 +537,80 @@ def optimization_time_dependent(args):
             f"  J_final = {J_final:.3e} (track={J_track_final:.3e}, "
             f"L2={J_reg_L2_final:.3e}, H1={J_reg_H1_final:.3e})"
         )
+    # ============================================================
+    # DIAGNOSTICA H1 TEMPORALE (Distributed controls)
+    # ============================================================
+    if solver.n_ctrl_distributed > 0:
+        from dolfinx.fem import form, assemble_scalar
 
-        # ============================================================
-        # DIAGNOSTICA H1 TEMPORALE (Distributed controls)
-        # ============================================================
-        if solver.n_ctrl_distributed > 0:
-            from dolfinx.fem import form, assemble_scalar
+        comm = domain.comm
+        dx = ufl.Measure("dx", domain=domain)
 
-            comm = domain.comm
-            dx = ufl.Measure("dx", domain=domain)
+        if rank == 0:
+            logger.debug("\n" + "=" * 70)
+            logger.debug("H1 TEMPORAL REGULARIZATION CHECK (DISTRIBUTED)")
+            logger.debug("=" * 70)
+            logger.debug(
+                f"gamma_u = {solver.gamma_u:.6e}, dt = {solver.dt:.6e}, num_steps = {num_steps}"
+            )
+
+        for j in range(solver.n_ctrl_distributed):
+            chiV = solver.chi_distributed_V[j]
+
+            # --- misura globale di Ωc (serve MPI allreduce) ---
+            meas_loc = assemble_scalar(form(chiV * dx))
+            meas = comm.allreduce(meas_loc, op=MPI.SUM)
+
+            # --- den globale (uguale a meas, ma lo teniamo separato per chiarezza) ---
+            den_loc = assemble_scalar(form(chiV * dx))
+            den = comm.allreduce(den_loc, op=MPI.SUM)
 
             if rank == 0:
-                logger.debug("\n" + "=" * 70)
-                logger.debug("H1 TEMPORAL REGULARIZATION CHECK (DISTRIBUTED)")
-                logger.debug("=" * 70)
+                logger.debug(f"\nH1t-DIST zone {j}")
+                logger.debug(f"  meas(Ωc) ≈ {float(meas):.6e}")
+
+            rough2 = 0.0
+            max_step_L2 = 0.0
+
+            # Campioni della media spaziale su Ωc (10 punti)
+            sample_means = []
+            stride = max(1, (num_steps - 1) // 10)
+            sample_idx = list(range(0, num_steps, stride))
+            if (num_steps - 1) not in sample_idx:
+                sample_idx.append(num_steps - 1)
+
+            # serie media (con numeratore globale)
+            for m in sample_idx:
+                um = u_distributed_funcs_time[m][j]
+                num_loc = assemble_scalar(form(um * chiV * dx))
+                num = comm.allreduce(num_loc, op=MPI.SUM)
+                mean_um = float(num / den) if den > 1e-14 else float("nan")
+                sample_means.append((m * solver.dt, mean_um))
+
+            # roughness vera (L2 su Ωc) — step per step con allreduce
+            for m in range(num_steps - 1):
+                u0 = u_distributed_funcs_time[m][j]
+                u1 = u_distributed_funcs_time[m + 1][j]
+                step_loc = assemble_scalar(form(((u1 - u0) ** 2) * chiV * dx))
+                step = float(comm.allreduce(step_loc, op=MPI.SUM))
+                rough2 += step
+                max_step_L2 = max(max_step_L2, step)
+
+            pred_JH1 = 0.5 * solver.gamma_u / solver.dt * rough2
+            rough = math.sqrt(rough2)
+            avg_step = math.sqrt(rough2 / max(1, num_steps - 1))
+
+            if rank == 0:
+                logger.debug(f"\nH1t-DIST zone {j}")
+                logger.debug(f"  predicted J_H1 = {pred_JH1:.6e}")
+                logger.debug(f"  roughness sqrt(sum ||Δu||^2) = {rough:.6e}")
                 logger.debug(
-                    f"gamma_u = {solver.gamma_u:.6e}, dt = {solver.dt:.6e}, num_steps = {num_steps}"
+                    f"  avg step L2-norm over Ωc (sqrt(mean ||Δu||^2)) = {avg_step:.6e}"
                 )
-
-            for j in range(solver.n_ctrl_distributed):
-                chiV = solver.chi_distributed_V[j]
-
-                # --- misura globale di Ωc (serve MPI allreduce) ---
-                meas_loc = assemble_scalar(form(chiV * dx))
-                meas = comm.allreduce(meas_loc, op=MPI.SUM)
-
-                # --- den globale (uguale a meas, ma lo teniamo separato per chiarezza) ---
-                den_loc = assemble_scalar(form(chiV * dx))
-                den = comm.allreduce(den_loc, op=MPI.SUM)
-
-                if rank == 0:
-                    logger.debug(f"\nH1t-DIST zone {j}")
-                    logger.debug(f"  meas(Ωc) ≈ {float(meas):.6e}")
-
-                rough2 = 0.0
-                max_step_L2 = 0.0
-
-                # Campioni della media spaziale su Ωc (10 punti)
-                sample_means = []
-                stride = max(1, (num_steps - 1) // 10)
-                sample_idx = list(range(0, num_steps, stride))
-                if (num_steps - 1) not in sample_idx:
-                    sample_idx.append(num_steps - 1)
-
-                # serie media (con numeratore globale)
-                for m in sample_idx:
-                    um = u_distributed_funcs_time[m][j]
-                    num_loc = assemble_scalar(form(um * chiV * dx))
-                    num = comm.allreduce(num_loc, op=MPI.SUM)
-                    mean_um = float(num / den) if den > 1e-14 else float("nan")
-                    sample_means.append((m * solver.dt, mean_um))
-
-                # roughness vera (L2 su Ωc) — step per step con allreduce
-                for m in range(num_steps - 1):
-                    u0 = u_distributed_funcs_time[m][j]
-                    u1 = u_distributed_funcs_time[m + 1][j]
-                    step_loc = assemble_scalar(form(((u1 - u0) ** 2) * chiV * dx))
-                    step = float(comm.allreduce(step_loc, op=MPI.SUM))
-                    rough2 += step
-                    max_step_L2 = max(max_step_L2, step)
-
-                pred_JH1 = 0.5 * solver.gamma_u / solver.dt * rough2
-                rough = math.sqrt(rough2)
-                avg_step = math.sqrt(rough2 / max(1, num_steps - 1))
-
-                if rank == 0:
-                    logger.debug(f"\nH1t-DIST zone {j}")
-                    logger.debug(f"  predicted J_H1 = {pred_JH1:.6e}")
-                    logger.debug(f"  roughness sqrt(sum ||Δu||^2) = {rough:.6e}")
-                    logger.debug(
-                        f"  avg step L2-norm over Ωc (sqrt(mean ||Δu||^2)) = {avg_step:.6e}"
-                    )
-                    logger.debug(f"  max step ||Δu||^2 over Ωc = {max_step_L2:.6e}")
-                    logger.debug("  sampled mean(u) over Ωc:")
-                    for t, mu in sample_means:
-                        logger.debug(f"    t={t:8.1f}s  mean(u)={mu:+.6e}")
+                logger.debug(f"  max step ||Δu||^2 over Ωc = {max_step_L2:.6e}")
+                logger.debug("  sampled mean(u) over Ωc:")
+                for t, mu in sample_means:
+                    logger.debug(f"    t={t:8.1f}s  mean(u)={mu:+.6e}")
 
         # ---------- STATISTICHE ----------
         for ic in range(n_ctrl_total):
@@ -733,40 +725,43 @@ def optimization_time_dependent(args):
                     f"    t={T_final_time:8.1f}s: u={get_val(num_steps - 1):.6e} {unit}  (held-last)"
                 )
 
-        T_final_diag = Y_final_all[-1]
+    T_final_diag = Y_final_all[-1]
 
-        # --- POSTPROCESSING CORRETTO DELLA TEMPERATURA MEDIA IN TARGET ZONE ---
-        V0_dg0 = functionspace(domain, ("DG", 0))
-        from dolfinx.fem import assemble_scalar, form
+    # --- POSTPROCESSING CORRETTO DELLA TEMPERATURA MEDIA IN TARGET ZONE ---
+    # functionspace/Function/assemble_scalar are MPI collective - all ranks must call
+    V0_dg0 = functionspace(domain, ("DG", 0))
+    from dolfinx.fem import assemble_scalar, form
+    dx = ufl.Measure("dx", domain=domain)
 
-        dx = ufl.Measure("dx", domain=domain)
+    for i, marker in enumerate(solver.target_markers):
+        chi_dg0 = Function(V0_dg0)
+        n_local = V0_dg0.dofmap.index_map.size_local
+        chi_dg0.x.array[:n_local] = marker.astype(PETSc.ScalarType)
+        chi_dg0.x.scatter_forward()
+        T_cell = Function(V0_dg0)
+        T_cell.interpolate(T_final_diag)
 
-        for i, marker in enumerate(solver.target_markers):
-            chi_dg0 = Function(V0_dg0)
-            chi_dg0.x.array[:] = marker.astype(PETSc.ScalarType)
-            T_cell = Function(V0_dg0)
-            T_cell.interpolate(T_final_diag)
+        Vc = functionspace(domain, ("DG", 0))
+        Tcell_sc = Function(Vc)
+        Tcell_sc.interpolate(T_final_diag)
 
-            if rank == 0:
-                Vc = functionspace(domain, ("DG", 0))
-                Tcell_sc = Function(Vc)
-                Tcell_sc.interpolate(T_final_diag)
-                mask = solver.sc_marker.astype(bool)
-                if np.any(mask):
-                    logger.debug(
-                        f"T_final_diag on constraint Tmin/Tmax = {float(Tcell_sc.x.array[mask].min())}, {float(Tcell_sc.x.array[mask].max())}"
-                    )
-                else:
-                    logger.debug("No constraint cells -> skipping Tmin/Tmax check.")
+        zone_integral = assemble_scalar(form(T_cell * chi_dg0 * dx))
+        chi_integral = assemble_scalar(form(chi_dg0 * dx))
 
-            zone_integral = assemble_scalar(form(T_cell * chi_dg0 * dx))
-            chi_integral = assemble_scalar(form(chi_dg0 * dx))
+        if rank == 0:
+            mask = solver.sc_marker.astype(bool)
+            n_local_sc = len(mask)
+            if np.any(mask):
+                logger.debug(
+                    f"T_final_diag on constraint Tmin/Tmax = {float(Tcell_sc.x.array[:n_local_sc][mask].min())}, {float(Tcell_sc.x.array[:n_local_sc][mask].max())}"
+                )
+            else:
+                logger.debug("No constraint cells -> skipping Tmin/Tmax check.")
 
             if chi_integral > 1e-12:
                 T_mean = zone_integral / chi_integral
                 print(f"\n  Target zone {i + 1}:")
                 print(f"    T_mean ≈ {T_mean:.6f}°C")
-
                 deficit = T_cure - T_mean
                 if deficit <= 0:
                     print("    [OK] Constraint satisfied ✓")
