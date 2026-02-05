@@ -2,6 +2,7 @@ import numpy as np
 import ufl
 from dolfinx.fem import Function, assemble_scalar, form
 
+
 def check_gradient_fd(
     solver,
     u_controls,
@@ -90,10 +91,15 @@ def check_gradient_fd(
             ad_val = assemble_scalar(form(g * rf * ds_j(mid)))
 
             # If H1 boundary Riesz, add tangential term
-            if getattr(solver, "dirichlet_spatial_reg", "L2") == "H1" and getattr(solver, "beta_u", 0.0) > 1e-16:
+            if (
+                getattr(solver, "dirichlet_spatial_reg", "L2") == "H1"
+                and getattr(solver, "beta_u", 0.0) > 1e-16
+            ):
                 tg_g = solver.tgrad(g)
                 tg_r = solver.tgrad(rf)
-                ad_val += solver.beta_u * assemble_scalar(form(ufl.inner(tg_g, tg_r) * ds_j(mid)))
+                ad_val += solver.beta_u * assemble_scalar(
+                    form(ufl.inner(tg_g, tg_r) * ds_j(mid))
+                )
 
             return float(ad_val)
 
@@ -171,20 +177,46 @@ def check_gradient_fd(
             return float(assemble_scalar(form(g * rf * chiV * dx)))
 
     else:
-        raise RuntimeError("Nessun controllo disponibile (Dirichlet/Neumann/Distributed).")
+        raise RuntimeError(
+            "Nessun controllo disponibile (Dirichlet/Neumann/Distributed)."
+        )
 
     if rank == 0:
-        print(f"[FD-CHECK] ctrl_type={ctrl_type}, zone={j0}, m0={m0}, ndofs={ndofs}, eps={eps}, seed={seed}", flush=True)
-        print(f"[FD-CHECK] alpha_u={solver.alpha_u:.6e}, gamma_u={solver.gamma_u:.6e}, beta_u={getattr(solver,'beta_u',0.0):.6e}, amp_base={amp_base}", flush=True)
+        print(
+            f"[FD-CHECK] ctrl_type={ctrl_type}, zone={j0}, m0={m0}, ndofs={ndofs}, eps={eps}, seed={seed}",
+            flush=True,
+        )
+        print(
+            f"[FD-CHECK] alpha_u={solver.alpha_u:.6e}, gamma_u={solver.gamma_u:.6e}, beta_u={getattr(solver, 'beta_u', 0.0):.6e}, amp_base={amp_base}",
+            flush=True,
+        )
 
     try:
         # ============================================================
         # 2) BASE: forward, cost, adjoint, grad
         # ============================================================
-        Y0 = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
-        J0, *_ = solver.compute_cost(u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time, Y0, T_cure)
+        Y0 = solver.solve_forward(
+            u_neumann_funcs_time,
+            u_distributed_funcs_time,
+            u_dirichlet_funcs_time,
+            T_cure,
+        )
+        J0, *_ = solver.compute_cost(
+            u_distributed_funcs_time,
+            u_neumann_funcs_time,
+            u_dirichlet_funcs_time,
+            Y0,
+            T_cure,
+        )
         P0 = solver.solve_adjoint(Y0, T_cure)
-        solver.compute_gradient(u_controls, Y0, P0, u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time)
+        solver.compute_gradient(
+            u_controls,
+            Y0,
+            P0,
+            u_distributed_funcs_time,
+            u_neumann_funcs_time,
+            u_dirichlet_funcs_time,
+        )
 
         if ctrl_type == "Dirichlet":
             g = solver.grad_u_dirichlet_time[m0][j0]
@@ -199,13 +231,35 @@ def check_gradient_fd(
         # 3) FD centrale: J(u+eps*r) e J(u-eps*r)
         # ============================================================
         apply_perturb(+1.0)
-        Yp = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
-        Jp, *_ = solver.compute_cost(u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time, Yp, T_cure)
+        Yp = solver.solve_forward(
+            u_neumann_funcs_time,
+            u_distributed_funcs_time,
+            u_dirichlet_funcs_time,
+            T_cure,
+        )
+        Jp, *_ = solver.compute_cost(
+            u_distributed_funcs_time,
+            u_neumann_funcs_time,
+            u_dirichlet_funcs_time,
+            Yp,
+            T_cure,
+        )
         undo_perturb(+1.0)
 
         apply_perturb(-1.0)
-        Ym = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
-        Jm, *_ = solver.compute_cost(u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time, Ym, T_cure)
+        Ym = solver.solve_forward(
+            u_neumann_funcs_time,
+            u_distributed_funcs_time,
+            u_dirichlet_funcs_time,
+            T_cure,
+        )
+        Jm, *_ = solver.compute_cost(
+            u_distributed_funcs_time,
+            u_neumann_funcs_time,
+            u_dirichlet_funcs_time,
+            Ym,
+            T_cure,
+        )
         undo_perturb(-1.0)
 
         fd = float((Jp - Jm) / (2.0 * eps))
@@ -213,7 +267,10 @@ def check_gradient_fd(
 
         if rank == 0:
             print(f"[FD-CHECK] J0={J0:.12e}  Jp={Jp:.12e}  Jm={Jm:.12e}", flush=True)
-            print(f"[GRAD-CHECK] FD={fd:+.6e}  AD={ad:+.6e}  rel_err={rel:.3e}", flush=True)
+            print(
+                f"[GRAD-CHECK] FD={fd:+.6e}  AD={ad:+.6e}  rel_err={rel:.3e}",
+                flush=True,
+            )
 
         return J0, fd, ad, rel
 

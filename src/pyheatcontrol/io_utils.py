@@ -9,18 +9,25 @@ from dolfinx.mesh import compute_midpoints
 from dolfinx.io import VTKFile
 from pyheatcontrol.logging_config import logger
 
+
 def _import_sanity_check():
     # minimal things we expect io_utils to have available
     _ = (np, MPI, mesh, Function, VTKFile)  # aggiungi/togli qui se serve
 
+
 def save_visualization_output(
-    solver, Y_all, P_all,
+    solver,
+    Y_all,
+    P_all,
     u_distributed_funcs_time,
     u_neumann_funcs_time,
     u_dirichlet_funcs_time,
-    sc_start_step, sc_end_step,
-    args, num_steps,
-    target_boxes, control_distributed_boxes
+    sc_start_step,
+    sc_end_step,
+    args,
+    num_steps,
+    target_boxes,
+    control_distributed_boxes,
 ):
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
@@ -30,8 +37,8 @@ def save_visualization_output(
     rank = comm.rank
 
     # --- Spazi output ---
-    V_out  = functionspace(domain, ("Lagrange", 1))  # Point Data (P1)
-    V0_out = functionspace(domain, ("DG", 0))        # Cell Data (DG0 robusto)
+    V_out = functionspace(domain, ("Lagrange", 1))  # Point Data (P1)
+    V0_out = functionspace(domain, ("DG", 0))  # Cell Data (DG0 robusto)
 
     # --- Lista timesteps da salvare ---
     timesteps_to_save = list(range(0, num_steps, args.output_freq))
@@ -45,18 +52,24 @@ def save_visualization_output(
     num_cells_local = imap.size_local
 
     cell_ids_local = np.arange(num_cells_local, dtype=np.int32)
-    cell_mid_local = compute_midpoints(domain, tdim, cell_ids_local)  # (num_cells_local, gdim)
+    cell_mid_local = compute_midpoints(
+        domain, tdim, cell_ids_local
+    )  # (num_cells_local, gdim)
 
     def mark_boxes_DG0(name, boxes):
         """Mark DG0 cell field =1 inside given boxes using cell midpoints (local-only)."""
         f = Function(V0_out, name=name)
         f.x.array[:] = 0.0
         a = f.x.array[:num_cells_local]
-        for (x0, x1, y0, y1) in boxes:
-            inside = np.logical_and.reduce([
-                cell_mid_local[:, 0] >= x0, cell_mid_local[:, 0] <= x1,
-                cell_mid_local[:, 1] >= y0, cell_mid_local[:, 1] <= y1
-            ])
+        for x0, x1, y0, y1 in boxes:
+            inside = np.logical_and.reduce(
+                [
+                    cell_mid_local[:, 0] >= x0,
+                    cell_mid_local[:, 0] <= x1,
+                    cell_mid_local[:, 1] >= y0,
+                    cell_mid_local[:, 1] <= y1,
+                ]
+            )
             a[inside] = 1.0
         f.x.scatter_forward()
         return f
@@ -132,12 +145,12 @@ def save_visualization_output(
         y1 = ymin + y1n * (ymax - ymin)
         return (x0, x1, y0, y1)
 
-    target_boxes_phys  = [box01_to_phys(b) for b in target_boxes]
+    target_boxes_phys = [box01_to_phys(b) for b in target_boxes]
     control_boxes_phys = [box01_to_phys(b) for b in control_distributed_boxes]
 
     # --- Zone volumetriche (Cell Data) ---
-    target_zone       = mark_boxes_DG0("omega_t",  target_boxes_phys)
-    control_zone_dist = mark_boxes_DG0("omega_c",  control_boxes_phys)
+    target_zone = mark_boxes_DG0("omega_t", target_boxes_phys)
+    control_zone_dist = mark_boxes_DG0("omega_c", control_boxes_phys)
 
     # Constraint zone
     constraint_zone = Function(V0_out, name="omega_sc")
@@ -164,31 +177,37 @@ def save_visualization_output(
         dirichlet_marker_ids = getattr(solver, "dirichlet_marker_id", None)
 
     # --- Zone boundary control (Cell Data): fascia di celle adiacenti al bordo controllato ---
-    omega_qn = mark_boundary_cells_DG0("omega_qn", neumann_facet_tags, neumann_marker_ids)
-    omega_qd = mark_boundary_cells_DG0("omega_qd", dirichlet_facet_tags, dirichlet_marker_ids)
+    omega_qn = mark_boundary_cells_DG0(
+        "omega_qn", neumann_facet_tags, neumann_marker_ids
+    )
+    omega_qd = mark_boundary_cells_DG0(
+        "omega_qd", dirichlet_facet_tags, dirichlet_marker_ids
+    )
 
     # --- Debug utile ---
     if rank == 0:
-        n_tgt  = int(np.round(target_zone.x.array[:num_cells_local].sum()))
+        n_tgt = int(np.round(target_zone.x.array[:num_cells_local].sum()))
         n_ctrl = int(np.round(control_zone_dist.x.array[:num_cells_local].sum()))
         n_cons = int(np.round(constraint_zone.x.array[:num_cells_local].sum()))
-        n_qn   = int(np.round(omega_qn.x.array[:num_cells_local].sum()))
-        n_qd   = int(np.round(omega_qd.x.array[:num_cells_local].sum()))
-        logger.debug(f"marked cells: target={n_tgt}, control_dist={n_ctrl}, constraint={n_cons}, omega_qn={n_qn}, omega_qd={n_qd}")
+        n_qn = int(np.round(omega_qn.x.array[:num_cells_local].sum()))
+        n_qd = int(np.round(omega_qd.x.array[:num_cells_local].sum()))
+        logger.debug(
+            f"marked cells: target={n_tgt}, control_dist={n_ctrl}, constraint={n_cons}, omega_qn={n_qn}, omega_qd={n_qd}"
+        )
 
     # --- Funzioni nodali (riusate) ---
-    y_out    = Function(V_out, name="T")
-    p_out    = Function(V_out, name="Ta")
-    uD_out   = Function(V_out, name="Q")
-    qN_out   = Function(V_out, name="q_n")
+    y_out = Function(V_out, name="T")
+    p_out = Function(V_out, name="Ta")
+    uD_out = Function(V_out, name="Q")
+    qN_out = Function(V_out, name="q_n")
     uDir_out = Function(V_out, name="q_d")
 
     # --- Funzioni cella (riusate) ---
     muL_out = Function(V0_out, name="multiplier_lower")
     muU_out = Function(V0_out, name="multiplier_upper")
-    vL_out  = Function(V0_out, name="violation_lower")
-    vU_out  = Function(V0_out, name="violation_upper")
-    T_cell  = Function(V0_out, name="T_cell_tmp")
+    vL_out = Function(V0_out, name="violation_lower")
+    vU_out = Function(V0_out, name="violation_upper")
+    T_cell = Function(V0_out, name="T_cell_tmp")
 
     tmp = Function(V)  # P2 riusata per sommare controlli
 

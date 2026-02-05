@@ -1,7 +1,11 @@
 import argparse
 
+
 def build_parser():
-    parser = argparse.ArgumentParser(description="Time-Dependent Optimal Control Of Heat Equation", formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description="Time-Dependent Optimal Control Of Heat Equation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
     # Domain
     parser.add_argument("--L", type=float, default=0.1)
@@ -39,10 +43,14 @@ def build_parser():
     parser.add_argument("--u-max", type=float, default=250.0)
     parser.add_argument("--check-grad", action="store_true")
     parser.add_argument("--beta-u", type=float, default=0.0)
-    parser.add_argument("--dirichlet-spatial-reg", type=str, default="L2", choices=["L2", "H1"])
+    parser.add_argument(
+        "--dirichlet-spatial-reg", type=str, default="L2", choices=["L2", "H1"]
+    )
 
     # State constraint selection
-    parser.add_argument("--sc-type", type=str, default="lower", choices=["lower", "upper", "box"])
+    parser.add_argument(
+        "--sc-type", type=str, default="lower", choices=["lower", "upper", "box"]
+    )
     parser.add_argument("--sc-lower", type=float, default=None)
     parser.add_argument("--sc-upper", type=float, default=None)
     parser.add_argument("--sc-start-time", type=float, default=None)
@@ -61,20 +69,31 @@ def build_parser():
     parser.add_argument("--no-vtk", action="store_true")
 
     # Logging
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show setup and configuration details")
-    parser.add_argument("--debug", action="store_true", help="Show all debug output (very verbose)")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show setup and configuration details",
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Show all debug output (very verbose)"
+    )
 
     return parser
+
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
 
     from pyheatcontrol.logging_config import setup_logging
+
     setup_logging(verbose=args.verbose, debug=args.debug)
 
     from pyheatcontrol.optimization import optimization_time_dependent
+
     optimization_time_dependent(args)
+
 
 if __name__ == "__main__":
     main()

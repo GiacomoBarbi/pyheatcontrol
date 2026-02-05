@@ -7,6 +7,7 @@ from dolfinx.fem import form, Function, functionspace
 from dolfinx.fem.petsc import assemble_vector
 from pyheatcontrol.logging_config import logger
 
+
 def _init_gradient_forms_impl(self):
     """Inizializza form pre-compilate per compute_gradient"""
     n = FacetNormal(self.domain)
@@ -30,7 +31,9 @@ def _init_gradient_forms_impl(self):
         mid = self.dirichlet_marker_ids[i]
 
         # Adjoint contribution: (-k ∇p·n) * v on ΓD
-        flux_form = (-self.k_therm * inner(ufl_grad(self._p_placeholder), n)) * v * ds_i(mid)
+        flux_form = (
+            (-self.k_therm * inner(ufl_grad(self._p_placeholder), n)) * v * ds_i(mid)
+        )
         self._grad_dirichlet_adj_forms.append(form(flux_form))
 
         # L2 regularization: alpha_u * dt * uD * v on ΓD
@@ -62,7 +65,9 @@ def _init_gradient_forms_impl(self):
 
         # L2 reg: alpha_u * dt * q * v on Γ
         if self.alpha_u > 1e-16:
-            reg_form = self.alpha_u * self.dt * self._q_placeholder * v * self.ds_neumann(mid)
+            reg_form = (
+                self.alpha_u * self.dt * self._q_placeholder * v * self.ds_neumann(mid)
+            )
             self._grad_neumann_reg_forms.append(form(reg_form))
         else:
             self._grad_neumann_reg_forms.append(None)
@@ -87,7 +92,15 @@ def _init_gradient_forms_impl(self):
     self._gradient_forms_initialized = True
 
 
-def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_time, q_neumann_funcs_time, u_dirichlet_funcs_time):
+def compute_gradient_impl(
+    self,
+    u_controls,
+    Y_all,
+    P_all,
+    u_distributed_funcs_time,
+    q_neumann_funcs_time,
+    u_dirichlet_funcs_time,
+):
     """
     Compute gradient via adjoint.
     - Neumann control è P2 in spazio e time-dependent: self.grad_q_neumann_time[m][i]
@@ -97,13 +110,16 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
     grad = np.zeros((self.n_ctrl_spatial, self.num_steps))
     # Inizializza forms se non già fatto
-    if not hasattr(self, '_gradient_forms_initialized'):
+    if not hasattr(self, "_gradient_forms_initialized"):
         self._init_gradient_forms()
 
     # ============================================================
     # Neumann gradient containers: [m][i] Function(V)
     # ============================================================
-    if self.grad_q_neumann_time is None or len(self.grad_q_neumann_time) != self.num_steps:
+    if (
+        self.grad_q_neumann_time is None
+        or len(self.grad_q_neumann_time) != self.num_steps
+    ):
         self.grad_q_neumann_time = [
             [Function(self.V) for _ in range(self.n_ctrl_neumann)]
             for _ in range(self.num_steps)
@@ -116,7 +132,10 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
     # ============================================================
     # Distributed gradient containers: [m][i] Function(V)
     # ============================================================
-    if self.grad_u_distributed_time is None or len(self.grad_u_distributed_time) != self.num_steps:
+    if (
+        self.grad_u_distributed_time is None
+        or len(self.grad_u_distributed_time) != self.num_steps
+    ):
         self.grad_u_distributed_time = [
             [Function(self.V) for _ in range(self.n_ctrl_distributed)]
             for _ in range(self.num_steps)
@@ -129,7 +148,10 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
     # ============================================================
     # Dirichlet gradient containers: [m][i] Function(V)
     # ============================================================
-    if self.grad_u_dirichlet_time is None or len(self.grad_u_dirichlet_time) != self.num_steps:
+    if (
+        self.grad_u_dirichlet_time is None
+        or len(self.grad_u_dirichlet_time) != self.num_steps
+    ):
         self.grad_u_dirichlet_time = [
             [Function(self.V) for _ in range(self.n_ctrl_dirichlet)]
             for _ in range(self.num_steps)
@@ -168,7 +190,9 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
                 b_reg_L2 = assemble_vector(self._grad_dirichlet_reg_forms[i])
-                b_reg_L2.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                b_reg_L2.ghostUpdate(
+                    addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                )
                 b_total.axpy(1.0, b_reg_L2)
 
             # Add H1(Γ) regularization contribution (tangential gradient)
@@ -181,13 +205,17 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
                 formH1 = self._grad_dirichlet_regH1_forms[i]
                 if formH1 is not None:
                     b_reg_H1 = assemble_vector(formH1)
-                    b_reg_H1.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_reg_H1.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
                     b_total.axpy(1.0, b_reg_H1)
 
                 if self.domain.comm.rank == 0 and m == 0:
                     h1_norm = b_reg_H1.norm()
                     l2_norm = b_reg_L2.norm() if self.alpha_u > 1e-16 else 0.0
-                    logger.debug(f"H1: m={m}, i={i}: ||b_L2||={l2_norm:.3e}, ||b_H1||={h1_norm:.3e}, ratio={h1_norm/max(l2_norm,1e-16):.3e}")
+                    logger.debug(
+                        f"H1: m={m}, i={i}: ||b_L2||={l2_norm:.3e}, ||b_H1||={h1_norm:.3e}, ratio={h1_norm / max(l2_norm, 1e-16):.3e}"
+                    )
 
             # Solve Riesz map: M_dirichlet * gD = b_total
             gD = self.grad_u_dirichlet_time[m][i]
@@ -196,7 +224,9 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
             imap = self.V.dofmap.index_map
             nloc = imap.size_local + imap.num_ghosts
             all_dofs = np.arange(nloc, dtype=np.int32)
-            off_dofs = np.setdiff1d(all_dofs, dofs_i.astype(np.int32), assume_unique=False).astype(np.int32)
+            off_dofs = np.setdiff1d(
+                all_dofs, dofs_i.astype(np.int32), assume_unique=False
+            ).astype(np.int32)
 
             # Zero RHS outside ΓD
             b_total.setValues(off_dofs, np.zeros(len(off_dofs), dtype=PETSc.ScalarType))
@@ -206,13 +236,24 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
             gD.x.scatter_forward()
 
             if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps - 1):
-                reg_type = "L2" if self.dirichlet_spatial_reg == "L2" else f"H1(α={self.alpha_u:.1e},β={self.beta_u:.1e})"
-                logger.debug(f"GRAD-DIRICHLET-{reg_type} m={m} on ΓD min/max: {float(gD.x.array[dofs_i].min())}, {float(gD.x.array[dofs_i].max())}")
+                reg_type = (
+                    "L2"
+                    if self.dirichlet_spatial_reg == "L2"
+                    else f"H1(α={self.alpha_u:.1e},β={self.beta_u:.1e})"
+                )
+                logger.debug(
+                    f"GRAD-DIRICHLET-{reg_type} m={m} on ΓD min/max: {float(gD.x.array[dofs_i].min())}, {float(gD.x.array[dofs_i].max())}"
+                )
             if self.domain.comm.rank == 0 and m == 0:
-                expected_raw = self.alpha_u * self.dt * uD_current.x.array[dofs_i].mean()
+                expected_raw = (
+                    self.alpha_u * self.dt * uD_current.x.array[dofs_i].mean()
+                )
                 actual_riesz = gD.x.array[dofs_i].mean()
                 b_norm = float(b_total.norm())
-                logger.debug(f"DIRICHLET-GRAD m={m}: uD mean={uD_current.x.array[dofs_i].mean():.6e}, "f"expected={expected_raw:.6e}, actual={actual_riesz:.6e}, ||b||={b_norm:.6e}")
+                logger.debug(
+                    f"DIRICHLET-GRAD m={m}: uD mean={uD_current.x.array[dofs_i].mean():.6e}, "
+                    f"expected={expected_raw:.6e}, actual={actual_riesz:.6e}, ||b||={b_norm:.6e}"
+                )
 
         # ---- Neumann controls (P2), gradient with proper L2(Γ) integral ----
         for i in range(self.n_ctrl_neumann):
@@ -236,7 +277,9 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
                 self._q_placeholder.x.array[:] = q_current.x.array[:]
                 self._q_placeholder.x.scatter_forward()
                 b_reg = assemble_vector(self._grad_neumann_reg_forms[i])
-                b_reg.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                b_reg.ghostUpdate(
+                    addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                )
                 b_total.axpy(1.0, b_reg)
 
             # Solve Riesz map: M_neumann * gq = b_total
@@ -246,7 +289,9 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
             gq.x.scatter_forward()
 
             if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps - 1):
-                logger.debug(f"GRAD-NEUMANN m={m} on Γ min/max: {float(gq.x.array[dofs_i].min())}, {float(gq.x.array[dofs_i].max())}")
+                logger.debug(
+                    f"GRAD-NEUMANN m={m} on Γ min/max: {float(gq.x.array[dofs_i].min())}, {float(gq.x.array[dofs_i].max())}"
+                )
 
             idx += 1
 
@@ -271,7 +316,9 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
                 b_reg = assemble_vector(self._grad_distributed_reg_forms[i])
-                b_reg.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                b_reg.ghostUpdate(
+                    addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                )
                 b_total.axpy(1.0, b_reg)
 
             # Solve Riesz map: M * gD = b_total
@@ -281,7 +328,9 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
             gD.x.scatter_forward()
 
             if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps - 1):
-                logger.debug(f"GRAD-UD m={m} min/max: {float(gD.x.array.min())}, {float(gD.x.array.max())}")
+                logger.debug(
+                    f"GRAD-UD m={m} min/max: {float(gD.x.array.min())}, {float(gD.x.array.max())}"
+                )
     # ============================================================
     # H1 temporal regularization for spatial controls
     # ============================================================
@@ -296,13 +345,23 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # Interior points: 2*u^m - u^{m-1} - u^{m+1}
                 if m > 0 and m < self.num_steps - 1:
-                    u_prev = u_distributed_funcs_time[m-1][i]
-                    u_next = u_distributed_funcs_time[m+1][i]
+                    u_prev = u_distributed_funcs_time[m - 1][i]
+                    u_next = u_distributed_funcs_time[m + 1][i]
 
                     v = TestFunction(self.V)
                     chiV = self.chi_distributed_V[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (2*u_curr - u_prev - u_next) * chiV * v * dx))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt)
+                            * (2 * u_curr - u_prev - u_next)
+                            * chiV
+                            * v
+                            * dx
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     # Solve Riesz map
                     temp.x.petsc_vec.set(0.0)
@@ -314,12 +373,18 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # First step: u^0 - u^1
                 elif m == 0:
-                    u_next = u_distributed_funcs_time[m+1][i]
+                    u_next = u_distributed_funcs_time[m + 1][i]
 
                     v = TestFunction(self.V)
                     chiV = self.chi_distributed_V[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (u_curr - u_next) * chiV * v * dx))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt) * (u_curr - u_next) * chiV * v * dx
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     temp.x.petsc_vec.set(0.0)
                     self.ksp_distributed[i].solve(b_h1t, temp.x.petsc_vec)
@@ -330,12 +395,18 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # Last step: u^M - u^{M-1}
                 else:  # m == self.num_steps - 1
-                    u_prev = u_distributed_funcs_time[m-1][i]
+                    u_prev = u_distributed_funcs_time[m - 1][i]
 
                     v = TestFunction(self.V)
                     chiV = self.chi_distributed_V[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (u_curr - u_prev) * chiV * v * dx))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt) * (u_curr - u_prev) * chiV * v * dx
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     temp.x.petsc_vec.set(0.0)
                     self.ksp_distributed[i].solve(b_h1t, temp.x.petsc_vec)
@@ -352,13 +423,22 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # Interior points
                 if m > 0 and m < self.num_steps - 1:
-                    q_prev = q_neumann_funcs_time[m-1][i]
-                    q_next = q_neumann_funcs_time[m+1][i]
+                    q_prev = q_neumann_funcs_time[m - 1][i]
+                    q_next = q_neumann_funcs_time[m + 1][i]
 
                     v = TestFunction(self.V)
                     mid = self.neumann_marker_ids[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (2*q_curr - q_prev - q_next) * v * self.ds_neumann(mid)))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt)
+                            * (2 * q_curr - q_prev - q_next)
+                            * v
+                            * self.ds_neumann(mid)
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     temp.x.petsc_vec.set(0.0)
                     self.ksp_neumann[i].solve(b_h1t, temp.x.petsc_vec)
@@ -369,12 +449,21 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # First step
                 elif m == 0:
-                    q_next = q_neumann_funcs_time[m+1][i]
+                    q_next = q_neumann_funcs_time[m + 1][i]
 
                     v = TestFunction(self.V)
                     mid = self.neumann_marker_ids[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (q_curr - q_next) * v * self.ds_neumann(mid)))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt)
+                            * (q_curr - q_next)
+                            * v
+                            * self.ds_neumann(mid)
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     temp.x.petsc_vec.set(0.0)
                     self.ksp_neumann[i].solve(b_h1t, temp.x.petsc_vec)
@@ -385,12 +474,21 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # Last step
                 else:
-                    q_prev = q_neumann_funcs_time[m-1][i]
+                    q_prev = q_neumann_funcs_time[m - 1][i]
 
                     v = TestFunction(self.V)
                     mid = self.neumann_marker_ids[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (q_curr - q_prev) * v * self.ds_neumann(mid)))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt)
+                            * (q_curr - q_prev)
+                            * v
+                            * self.ds_neumann(mid)
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     temp.x.petsc_vec.set(0.0)
                     self.ksp_neumann[i].solve(b_h1t, temp.x.petsc_vec)
@@ -407,14 +505,23 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # Interior points
                 if m > 0 and m < self.num_steps - 1:
-                    uD_prev = u_dirichlet_funcs_time[m-1][i]
-                    uD_next = u_dirichlet_funcs_time[m+1][i]
+                    uD_prev = u_dirichlet_funcs_time[m - 1][i]
+                    uD_next = u_dirichlet_funcs_time[m + 1][i]
 
                     v = TestFunction(self.V)
                     ds_i = self.dirichlet_measures[i]
                     mid = self.dirichlet_marker_ids[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (2*uD_curr - uD_prev - uD_next) * v * ds_i(mid)))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt)
+                            * (2 * uD_curr - uD_prev - uD_next)
+                            * v
+                            * ds_i(mid)
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     temp.x.petsc_vec.set(0.0)
                     self.ksp_dirichlet[i].solve(b_h1t, temp.x.petsc_vec)
@@ -425,13 +532,22 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # First step
                 elif m == 0:
-                    uD_next = u_dirichlet_funcs_time[m+1][i]
+                    uD_next = u_dirichlet_funcs_time[m + 1][i]
 
                     v = TestFunction(self.V)
                     ds_i = self.dirichlet_measures[i]
                     mid = self.dirichlet_marker_ids[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (uD_curr - uD_next) * v * ds_i(mid)))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt)
+                            * (uD_curr - uD_next)
+                            * v
+                            * ds_i(mid)
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     temp.x.petsc_vec.set(0.0)
                     self.ksp_dirichlet[i].solve(b_h1t, temp.x.petsc_vec)
@@ -442,13 +558,22 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
                 # Last step
                 else:
-                    uD_prev = u_dirichlet_funcs_time[m-1][i]
+                    uD_prev = u_dirichlet_funcs_time[m - 1][i]
 
                     v = TestFunction(self.V)
                     ds_i = self.dirichlet_measures[i]
                     mid = self.dirichlet_marker_ids[i]
-                    b_h1t = assemble_vector(form((self.gamma_u / self.dt) * (uD_curr - uD_prev) * v * ds_i(mid)))
-                    b_h1t.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                    b_h1t = assemble_vector(
+                        form(
+                            (self.gamma_u / self.dt)
+                            * (uD_curr - uD_prev)
+                            * v
+                            * ds_i(mid)
+                        )
+                    )
+                    b_h1t.ghostUpdate(
+                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
+                    )
 
                     temp.x.petsc_vec.set(0.0)
                     self.ksp_dirichlet[i].solve(b_h1t, temp.x.petsc_vec)
@@ -459,6 +584,7 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 
     return grad
 
+
 def tgrad_impl(self, u):
     """Tangential gradient on the boundary: (I - n⊗n) ∇u."""
     n = ufl.FacetNormal(self.domain)
@@ -466,7 +592,10 @@ def tgrad_impl(self, u):
     P = Id - ufl.outer(n, n)
     return P * ufl.grad(u)
 
-def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step):
+
+def update_multiplier_mu_impl(
+    self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step
+):
     """
     Moreau–Yosida update for PATH constraints over time window [sc_start_step, sc_end_step].
     Works in DG0 (cell-wise) using self.sc_marker.
@@ -552,18 +681,22 @@ def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc
             muL_max = float(np.max(muL_new)) if muL_new.size else 0.0
             muU_max = float(np.max(muU_new)) if muU_new.size else 0.0
             t_m = m * self.dt
-            logger.debug(f"SC-PATH t={t_m:.1f}s (m={m}): T∈[{Tmin_sc:.2f}, {Tmax_sc:.2f}]°C, violL={vL:.2e}, violU={vU:.2e}, μL_max={muL_max:.2e}, μU_max={muU_max:.2e}")
+            logger.debug(
+                f"SC-PATH t={t_m:.1f}s (m={m}): T∈[{Tmin_sc:.2f}, {Tmax_sc:.2f}]°C, violL={vL:.2e}, violU={vU:.2e}, μL_max={muL_max:.2e}, μU_max={muU_max:.2e}"
+            )
 
     # Summary
     if self.domain.comm.rank == 0:
-        logger.debug(f"SC-PATH-SUMMARY Window steps=[{sc_start_step},{sc_end_step}], max_violation={feas_inf_max:.2e}, max_Δμ={delta_mu_max:.2e}")
+        logger.debug(
+            f"SC-PATH-SUMMARY Window steps=[{sc_start_step},{sc_end_step}], max_violation={feas_inf_max:.2e}, max_Δμ={delta_mu_max:.2e}"
+        )
         Vc = functionspace(self.domain, ("DG", 0))
         mask = self.sc_marker.astype(bool)
 
         max_out_L = 0.0
         max_out_U = 0.0
-        max_in_L  = 0.0
-        max_in_U  = 0.0
+        max_in_L = 0.0
+        max_in_U = 0.0
 
         for m in range(sc_start_step, sc_end_step + 1):
             muL = Function(Vc)
@@ -575,11 +708,21 @@ def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc
             aU = muU.x.array
 
             if aL.size:
-                max_in_L  = max(max_in_L,  float(np.max(aL[mask])) if np.any(mask) else 0.0)
-                max_in_U  = max(max_in_U,  float(np.max(aU[mask])) if np.any(mask) else 0.0)
-                max_out_L = max(max_out_L, float(np.max(aL[~mask])) if np.any(~mask) else 0.0)
-                max_out_U = max(max_out_U, float(np.max(aU[~mask])) if np.any(~mask) else 0.0)
+                max_in_L = max(
+                    max_in_L, float(np.max(aL[mask])) if np.any(mask) else 0.0
+                )
+                max_in_U = max(
+                    max_in_U, float(np.max(aU[mask])) if np.any(mask) else 0.0
+                )
+                max_out_L = max(
+                    max_out_L, float(np.max(aL[~mask])) if np.any(~mask) else 0.0
+                )
+                max_out_U = max(
+                    max_out_U, float(np.max(aU[~mask])) if np.any(~mask) else 0.0
+                )
 
-        logger.debug(f"TEST-MU max_in: muL={max_in_L:.3e} muU={max_in_U:.3e} | max_out: muL={max_out_L:.3e} muU={max_out_U:.3e}")
+        logger.debug(
+            f"TEST-MU max_in: muL={max_in_L:.3e} muU={max_in_U:.3e} | max_out: muL={max_out_L:.3e} muU={max_out_U:.3e}"
+        )
 
     return delta_mu_max, feas_inf_max

@@ -4,12 +4,19 @@ import numpy as np
 from dolfinx import mesh
 from dolfinx.fem import locate_dofs_geometrical, Function, functionspace
 
+
 def create_mesh(n, L):
     """Mesh quadrata [0,L]x[0,L]"""
     Nx = 2**n
     Ny = 2**n
-    domain = mesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [L, L]], [Nx, Ny], cell_type=mesh.CellType.quadrilateral)
+    domain = mesh.create_rectangle(
+        MPI.COMM_WORLD,
+        [[0.0, 0.0], [L, L]],
+        [Nx, Ny],
+        cell_type=mesh.CellType.quadrilateral,
+    )
     return domain
+
 
 def mark_cells_in_boxes(domain, boxes, L):
     """Marca celle in boxes"""
@@ -20,29 +27,33 @@ def mark_cells_in_boxes(domain, boxes, L):
     cell_centers = x_cells[cell_dofmap].mean(axis=1)
     marker = np.zeros(num_cells, dtype=bool)
 
-    for (xmin, xmax, ymin, ymax) in boxes:
+    for xmin, xmax, ymin, ymax in boxes:
         xmin_phys = xmin * L
         xmax_phys = xmax * L
         ymin_phys = ymin * L
         ymax_phys = ymax * L
 
-        mask = np.logical_and.reduce([
-            cell_centers[:, 0] >= xmin_phys,
-            cell_centers[:, 0] <= xmax_phys,
-            cell_centers[:, 1] >= ymin_phys,
-            cell_centers[:, 1] <= ymax_phys
-        ])
+        mask = np.logical_and.reduce(
+            [
+                cell_centers[:, 0] >= xmin_phys,
+                cell_centers[:, 0] <= xmax_phys,
+                cell_centers[:, 1] >= ymin_phys,
+                cell_centers[:, 1] <= ymax_phys,
+            ]
+        )
         marker |= mask
 
     return marker
 
+
 def create_boundary_condition_function(domain, V, segments, L):
     """Crea funzione boundary per segmenti specificati (Dirichlet)"""
+
     def boundary_predicate(x):
         eps = 1e-14
         mask = np.zeros(x.shape[1], dtype=bool)
 
-        for (side, tmin, tmax) in segments:
+        for side, tmin, tmax in segments:
             tmin_L = tmin * L
             tmax_L = tmax * L
 
@@ -61,7 +72,7 @@ def create_boundary_condition_function(domain, V, segments, L):
             else:
                 continue
 
-            mask |= (on_side & in_range)
+            mask |= on_side & in_range
 
         return mask
 
@@ -69,6 +80,7 @@ def create_boundary_condition_function(domain, V, segments, L):
     bc_func = Function(V)
 
     return dofs, bc_func
+
 
 def create_boundary_facet_tags(domain, segments, L, marker_id):
     """
@@ -84,7 +96,7 @@ def create_boundary_facet_tags(domain, segments, L, marker_id):
         eps = 1e-14
         mask = np.zeros(x.shape[1], dtype=bool)
 
-        for (side, tmin, tmax) in segments:
+        for side, tmin, tmax in segments:
             tmin_L = tmin * L
             tmax_L = tmax * L
 
@@ -103,11 +115,13 @@ def create_boundary_facet_tags(domain, segments, L, marker_id):
             else:
                 continue
 
-            mask |= (on_side & in_range)
+            mask |= on_side & in_range
 
         return mask
 
-    boundary_facets = locate_entities_boundary(domain, fdim, boundary_predicate).astype(np.int32)
+    boundary_facets = locate_entities_boundary(domain, fdim, boundary_predicate).astype(
+        np.int32
+    )
 
     # meshtags richiede indici ordinati
     order = np.argsort(boundary_facets)
