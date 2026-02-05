@@ -32,3 +32,23 @@ old/
 *.egg-info/
 .ruff_cache/
 
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Distribution / Build
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+
+# coverage
+.coverage
+htmlcov/
+
