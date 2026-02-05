@@ -1,10 +1,10 @@
 import numpy as np
 from petsc4py import PETSc
 import ufl
-from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetNormal
+from ufl import dx, grad as ufl_grad, inner, TestFunction, FacetNormal
 
-from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
-from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
+from dolfinx.fem import form, Function, functionspace
+from dolfinx.fem.petsc import assemble_vector
 from pyheatcontrol.logging_config import logger
 
 def _init_gradient_forms_impl(self):
@@ -99,8 +99,6 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
     # Inizializza forms se non già fatto
     if not hasattr(self, '_gradient_forms_initialized'):
         self._init_gradient_forms()
-
-    n = FacetNormal(self.domain)
 
     # ============================================================
     # Neumann gradient containers: [m][i] Function(V)
@@ -464,8 +462,8 @@ def compute_gradient_impl(self, u_controls, Y_all, P_all, u_distributed_funcs_ti
 def tgrad_impl(self, u):
     """Tangential gradient on the boundary: (I - n⊗n) ∇u."""
     n = ufl.FacetNormal(self.domain)
-    I = ufl.Identity(self.domain.geometry.dim)
-    P = I - ufl.outer(n, n)
+    Id = ufl.Identity(self.domain.geometry.dim)
+    P = Id - ufl.outer(n, n)
     return P * ufl.grad(u)
 
 def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step):
@@ -548,9 +546,8 @@ def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc
             if n_active > 0:
                 Tmin_sc = float(np.min(T_cell.x.array[active]))
                 Tmax_sc = float(np.max(T_cell.x.array[active]))
-                Tmean_sc = float(np.mean(T_cell.x.array[active]))
             else:
-                Tmin_sc = Tmax_sc = Tmean_sc = float("nan")
+                Tmin_sc = Tmax_sc = float("nan")
 
             muL_max = float(np.max(muL_new)) if muL_new.size else 0.0
             muU_max = float(np.max(muU_new)) if muU_new.size else 0.0
@@ -569,8 +566,10 @@ def update_multiplier_mu_impl(self, Y_all, sc_type, sc_lower, sc_upper, beta, sc
         max_in_U  = 0.0
 
         for m in range(sc_start_step, sc_end_step + 1):
-            muL = Function(Vc); muL.interpolate(self.mu_lower_time[m])
-            muU = Function(Vc); muU.interpolate(self.mu_upper_time[m])
+            muL = Function(Vc)
+            muL.interpolate(self.mu_lower_time[m])
+            muU = Function(Vc)
+            muU.interpolate(self.mu_upper_time[m])
 
             aL = muL.x.array
             aU = muU.x.array

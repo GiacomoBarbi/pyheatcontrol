@@ -3,9 +3,9 @@
 import numpy as np
 from petsc4py import PETSc
 import ufl
-from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetNormal
-from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
-from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
+from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction
+from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar
+from dolfinx.fem.petsc import assemble_matrix
 from .forward import solve_forward_impl
 from .adjoint import solve_adjoint_impl
 from .gradient import _init_gradient_forms_impl, compute_gradient_impl, tgrad_impl, update_multiplier_mu_impl
@@ -241,8 +241,8 @@ class TimeDepHeatSolver:
             u_trial = TrialFunction(V)
             v_test  = TestFunction(V)
             n = ufl.FacetNormal(domain)
-            I = ufl.Identity(domain.geometry.dim)
-            P = I - ufl.outer(n, n)  # projector on tangent space
+            Id = ufl.Identity(domain.geometry.dim)
+            P = Id - ufl.outer(n, n)  # projector on tangent space
 
             for i in range(self.n_ctrl_dirichlet):
                 ds_i = self.dirichlet_measures[i]
@@ -472,7 +472,6 @@ class TimeDepHeatSolver:
     def _init_cost_forms(self, T_cure):
         """Inizializza form pre-compilate per compute_cost"""
         dx = ufl.Measure("dx", domain=self.domain)
-        n = FacetNormal(self.domain)
 
         # Placeholder per temperatura (verrà aggiornato)
         self._T_placeholder = Function(self.V)
@@ -507,8 +506,10 @@ class TimeDepHeatSolver:
         self._u_dist_H1_ph0 = [Function(self.V) for _ in range(self.n_ctrl_distributed)]
         self._u_dist_H1_ph1 = [Function(self.V) for _ in range(self.n_ctrl_distributed)]
         for f0, f1 in zip(self._u_dist_H1_ph0, self._u_dist_H1_ph1):
-            f0.x.array[:] = 0.0; f0.x.scatter_forward()
-            f1.x.array[:] = 0.0; f1.x.scatter_forward()
+            f0.x.array[:] = 0.0
+            f0.x.scatter_forward()
+            f1.x.array[:] = 0.0
+            f1.x.scatter_forward()
 
         self._dist_H1t_forms = []
         for j in range(self.n_ctrl_distributed):
@@ -542,8 +543,10 @@ class TimeDepHeatSolver:
         self._u_dir_H1_ph0 = [Function(self.V) for _ in range(self.n_ctrl_dirichlet)]
         self._u_dir_H1_ph1 = [Function(self.V) for _ in range(self.n_ctrl_dirichlet)]
         for f0, f1 in zip(self._u_dir_H1_ph0, self._u_dir_H1_ph1):
-            f0.x.array[:] = 0.0; f0.x.scatter_forward()
-            f1.x.array[:] = 0.0; f1.x.scatter_forward()
+            f0.x.array[:] = 0.0
+            f0.x.scatter_forward()
+            f1.x.array[:] = 0.0
+            f1.x.scatter_forward()
 
         self._dir_H1t_forms = []
         for j in range(self.n_ctrl_dirichlet):
@@ -559,7 +562,6 @@ class TimeDepHeatSolver:
             self._init_cost_forms(T_cure)
         if not hasattr(self, '_control_cost_forms_initialized'):
             self._init_control_cost_forms()
-        dx = ufl.Measure("dx", domain=self.domain)
 
         # ============================================================
         # Tracking (trapezoidal in time)

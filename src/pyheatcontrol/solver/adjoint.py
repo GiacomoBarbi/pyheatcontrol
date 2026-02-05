@@ -1,9 +1,8 @@
-import numpy as np
 from petsc4py import PETSc
 import ufl
-from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetNormal
+from ufl import TestFunction
 
-from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
+from dolfinx.fem import form, Function, Constant, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
 def solve_adjoint_impl(self, Y_all, T_cure):
@@ -12,7 +11,6 @@ def solve_adjoint_impl(self, Y_all, T_cure):
     """
     v = TestFunction(self.V)
     dx = ufl.Measure("dx", domain=self.domain)
-    n = FacetNormal(self.domain)
     dt_const = Constant(self.domain, PETSc.ScalarType(self.dt))
 
     # P_all[m] = p^m for m=0..N (N = num_steps). self.Nt = N+1
@@ -93,19 +91,8 @@ def solve_adjoint_impl(self, Y_all, T_cure):
         muL_m = self.mu_lower_time[m]   # DG0 function
         muU_m = self.mu_upper_time[m]   # DG0 function
 
-        # --- TEST 3: check SC forcing is only on chi_sc (not targets) ---
-        if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps):
-            sc_int = assemble_scalar(form((muL_m + muU_m) * self.chi_sc * dx))
-            tgt_ints = [
-                assemble_scalar(form((muL_m + muU_m) * chi_t * dx))
-                for chi_t in self.chi_targets
-            ]
-
         tracking_form += (-weight) * muL_m * self.chi_sc * v * dx
         tracking_form += (+weight) * muU_m * self.chi_sc * v * dx
-
-        # Adjoint RHS: (rho_c/dt) * p^{m+1} + forcing
-        L_adj = (self.rho_c / dt_const) * p_next * v * dx + tracking_form
 
         # Assemble adjoint RHS into a reused vector (allocate once on first iteration)
         if m == self.num_steps:

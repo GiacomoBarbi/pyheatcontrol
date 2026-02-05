@@ -168,8 +168,10 @@ def optimization_time_dependent(args):
     solver.mu_lower_time = []
     solver.mu_upper_time = []
     for _ in range(num_steps + 1):
-        mu_L = Function(Vc); mu_L.x.array[:] = 0.0
-        mu_U = Function(Vc); mu_U.x.array[:] = 0.0
+        mu_L = Function(Vc)
+        mu_L.x.array[:] = 0.0
+        mu_U = Function(Vc)
+        mu_U.x.array[:] = 0.0
         solver.mu_lower_time.append(mu_L)
         solver.mu_upper_time.append(mu_U)
 
@@ -184,7 +186,6 @@ def optimization_time_dependent(args):
 
     # Aggiungi:
     if rank == 0:
-        V0 = solver.V0
         x_cells = domain.geometry.x
         cell_dofmap = domain.geometry.dofmap
         cell_centers = x_cells[cell_dofmap].mean(axis=1)
@@ -225,12 +226,6 @@ def optimization_time_dependent(args):
             logger.info("\nSC LOOP Starting...\n")
         else:
             logger.info("\nSC LOOP skipped (no constraints or sc_maxit=0)\n")
-
-    Y_all_updated = None
-    J_updated = None
-    J_track_updated = None
-    J_reg_L2_updated = None
-    J_reg_H1_updated = None
 
     sc_iter = -1
 
@@ -337,11 +332,6 @@ def optimization_time_dependent(args):
             # ============================================================
             Y_all = solver.solve_forward(u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure)
             J, J_track, J_reg_L2, J_reg_H1 = solver.compute_cost(u_distributed_funcs_time, u_neumann_funcs_time, u_dirichlet_funcs_time, Y_all, T_cure)
-            Y_all_updated = Y_all
-            J_updated = J
-            J_track_updated = J_track
-            J_reg_L2_updated = J_reg_L2
-            J_reg_H1_updated = J_reg_H1
 
             # if rank == 0 and inner_iter % 5 == 0:
             if rank == 0:
@@ -359,24 +349,10 @@ def optimization_time_dependent(args):
                     print(f"  [Inner converged at iter {inner_iter}]")
                 break
 
-        # IMPORTANT: use the last updated state from inner loop (do NOT recompute forward here)
-        # Y_all = solver.solve_forward(
-        #     u_controls,
-        #     u_neumann_funcs_time,
-        #     u_distributed_funcs_time,
-        #     u_dirichlet_funcs_time,
-        #     T_cure
-        # )
-        # # DEBUG: verifica ridondanza
-        # if rank == 0:
-        #     T_inner = Y_all_updated[-1].x.array.copy() if Y_all_updated is not None else None
-        #     T_outer = Y_all[-1].x.array.copy()
-        #     if T_inner is not None:
-        #         diff = np.max(np.abs(T_inner - T_outer))
-
         if rank == 0:
             Vc = functionspace(domain, ("DG", 0))
-            Tcell = Function(Vc); Tcell.interpolate(Y_all[-1])
+            Tcell = Function(Vc)
+            Tcell.interpolate(Y_all[-1])
             mask = solver.sc_marker.astype(bool)
             logger.debug(f"len(sc_marker) = {len(solver.sc_marker)}")
             logger.debug(f"len(Tcell DG0) = {len(Tcell.x.array)}")
@@ -601,11 +577,13 @@ def optimization_time_dependent(args):
         for i, marker in enumerate(solver.target_markers):
             chi_dg0 = Function(V0_dg0)
             chi_dg0.x.array[:] = marker.astype(PETSc.ScalarType)
-            T_cell = Function(V0_dg0); T_cell.interpolate(T_final_diag)
+            T_cell = Function(V0_dg0)
+            T_cell.interpolate(T_final_diag)
 
             if rank == 0:
                 Vc = functionspace(domain, ("DG", 0))
-                Tcell_sc = Function(Vc); Tcell_sc.interpolate(T_final_diag)
+                Tcell_sc = Function(Vc)
+                Tcell_sc.interpolate(T_final_diag)
                 mask = solver.sc_marker.astype(bool)
                 if np.any(mask):
                     logger.debug(f"T_final_diag on constraint Tmin/Tmax = {float(Tcell_sc.x.array[mask].min())}, {float(Tcell_sc.x.array[mask].max())}")

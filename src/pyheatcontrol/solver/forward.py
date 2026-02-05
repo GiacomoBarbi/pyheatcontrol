@@ -1,12 +1,9 @@
-import numpy as np
 from petsc4py import PETSc
-import ufl
-from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction, FacetNormal
+from ufl import dx, TestFunction
 
-from dolfinx.fem import form, Function, Constant, functionspace, assemble_scalar, dirichletbc
+from dolfinx.fem import form, Function, Constant, assemble_scalar, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
-from pyheatcontrol.mesh_utils import (create_boundary_condition_function, create_boundary_facet_tags, mark_cells_in_boxes)
 from pyheatcontrol.logging_config import logger
 
 def solve_forward_impl(self, q_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure):
