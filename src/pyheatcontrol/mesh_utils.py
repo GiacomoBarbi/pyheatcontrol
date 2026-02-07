@@ -6,7 +6,7 @@ from dolfinx.fem import locate_dofs_geometrical, Function, functionspace
 
 
 def create_mesh(n, L):
-    """Mesh quadrata [0,L]x[0,L]"""
+    """Create square mesh [0,L]x[0,L]."""
     Nx = 2**n
     Ny = 2**n
     domain = mesh.create_rectangle(
@@ -19,12 +19,12 @@ def create_mesh(n, L):
 
 
 def mark_cells_in_boxes(domain, boxes, L):
-    """Marca celle in boxes (solo celle owned, non ghost)"""
+    """Mark cells inside boxes (owned cells only, no ghosts)."""
     V0 = functionspace(domain, ("DG", 0))
     num_cells = V0.dofmap.index_map.size_local
     x_cells = domain.geometry.x
     cell_dofmap = domain.geometry.dofmap
-    # Calcola centri solo per le celle owned (prime num_cells righe)
+    # Compute centers for owned cells only
     cell_centers = x_cells[cell_dofmap[:num_cells]].mean(axis=1)
     marker = np.zeros(num_cells, dtype=bool)
 
@@ -48,7 +48,7 @@ def mark_cells_in_boxes(domain, boxes, L):
 
 
 def create_boundary_condition_function(domain, V, segments, L):
-    """Crea funzione boundary per segmenti specificati (Dirichlet)"""
+    """Create boundary function for specified segments (Dirichlet)."""
 
     def boundary_predicate(x):
         eps = 1e-14
@@ -84,9 +84,10 @@ def create_boundary_condition_function(domain, V, segments, L):
 
 
 def create_boundary_facet_tags(domain, segments, L, marker_id):
-    """
-    Crea facet tags per boundary (Neumann/Dirichlet) su segmenti specificati.
-    Returns: (facet_tags, marker_id)
+    """Create facet tags for boundary segments (Neumann/Dirichlet).
+
+    Returns:
+        (facet_tags, marker_id)
     """
     from dolfinx.mesh import locate_entities_boundary, meshtags
 
@@ -124,12 +125,12 @@ def create_boundary_facet_tags(domain, segments, L, marker_id):
         np.int32
     )
 
-    # meshtags richiede indici ordinati
+    # meshtags requires sorted indices
     order = np.argsort(boundary_facets)
     boundary_facets = boundary_facets[order]
 
     values = np.full(boundary_facets.shape, marker_id, dtype=np.int32)
-    # values = values[order]  # (ridondante ma coerente)
+    
 
     facet_tags = meshtags(domain, fdim, boundary_facets, values)
     return facet_tags, marker_id

@@ -16,23 +16,23 @@ def check_gradient_fd(
     amp_base=1e-1,
 ):
     """
-    FD/AD gradient check per V4 (controlli time-dependent come Function(V)).
+    Finite-difference vs adjoint gradient check (central differences).
 
-    Test come DERIVATA DIREZIONALE:
+    Computes directional derivative in a random direction r:
       FD: (J(u+eps*r) - J(u-eps*r)) / (2*eps)
-      AD: <g, r>  (integrale su bordo o volume a seconda del controllo)
+      AD: <g, r> (boundary or volume integral depending on control type)
 
-    Coerente col Riesz representant usato in compute_gradient.
-    Include (solo per Dirichlet) una "base" non costante per eccitare H1(Γ)
-    senza lasciare side-effects (viene rimossa a fine test).
+    Consistent with the Riesz representant used in compute_gradient.
+    For Dirichlet controls, optionally applies a non-constant base perturbation
+    to excite spatial H1(Γ) terms (removed after the test).
     """
 
     rank = solver.domain.comm.rank
-    assert 0 <= m0 < solver.num_steps, "m0 deve essere in [0, num_steps-1]"
+    assert 0 <= m0 < solver.num_steps, "m0 must be in [0, num_steps-1]"
 
     dx = ufl.Measure("dx", domain=solver.domain)
 
-    # Helper per gestire eventuale base (solo Dirichlet)
+    # Helper for optional non-constant base (Dirichlet only)
     base_applied = False
 
     # ============================================================
@@ -44,7 +44,7 @@ def check_gradient_fd(
         dofs = solver.dirichlet_dofs[j0]
         ndofs = len(dofs)
         if ndofs == 0:
-            raise RuntimeError("Dirichlet DOFs vuoti: impossibile fare FD check.")
+            raise RuntimeError("Dirichlet DOFs empty: cannot perform FD check.")
 
         ds_j = solver.dirichlet_measures[j0]
         mid = solver.dirichlet_marker_ids[j0]
@@ -103,7 +103,7 @@ def check_gradient_fd(
 
             return float(ad_val)
 
-        # Applica base (per eccitare H1 spaziale su ΓD)
+        # Apply base perturbation (to excite spatial H1 on ΓD)
         apply_base()
 
     elif solver.n_ctrl_neumann > 0:
@@ -112,7 +112,7 @@ def check_gradient_fd(
         dofs = solver.neumann_dofs[j0]
         ndofs = len(dofs)
         if ndofs == 0:
-            raise RuntimeError("Neumann DOFs vuoti: impossibile fare FD check.")
+            raise RuntimeError("Neumann DOFs empty: cannot perform FD check.")
 
         mid = solver.neumann_marker_ids[j0]
 
@@ -147,7 +147,7 @@ def check_gradient_fd(
         dofs = solver.distributed_dofs[j0]
         ndofs = len(dofs)
         if ndofs == 0:
-            raise RuntimeError("Distributed DOFs vuoti: impossibile fare FD check.")
+            raise RuntimeError("Distributed DOFs empty: cannot perform FD check.")
 
         chiV = solver.chi_distributed_V[j0]
 
@@ -178,7 +178,7 @@ def check_gradient_fd(
 
     else:
         raise RuntimeError(
-            "Nessun controllo disponibile (Dirichlet/Neumann/Distributed)."
+            "No controls available (Dirichlet/Neumann/Distributed)."
         )
 
     if rank == 0:
@@ -275,5 +275,5 @@ def check_gradient_fd(
         return J0, fd, ad, rel
 
     finally:
-        # IMPORTANT: rimuovi la base non costante (se applicata) per non sporcare il run
+        # Remove non-constant base perturbation (if applied) to keep state clean
         undo_base()

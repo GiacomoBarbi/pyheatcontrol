@@ -1,4 +1,5 @@
 import numpy as np
+from mpi4py import MPI
 from petsc4py import PETSc
 import ufl
 from ufl import dx, grad as ufl_grad, inner, TestFunction, FacetNormal
@@ -9,15 +10,15 @@ from pyheatcontrol.logging_config import logger
 
 
 def _init_gradient_forms_impl(self):
-    """Inizializza form pre-compilate per compute_gradient"""
+    """Initialize precompiled forms for compute_gradient."""
     n = FacetNormal(self.domain)
     v = TestFunction(self.V)
     dx = ufl.Measure("dx", domain=self.domain)
 
-    # Placeholder per adjoint p (viene aggiornato nel loop)
+    # Adjoint placeholder (updated in the gradient loop)
     self._p_placeholder = Function(self.V)
 
-    # Placeholder per controlli (per regularizzazione)
+    # Control placeholders (for regularization terms)
     self._uD_placeholder = Function(self.V)
     self._q_placeholder = Function(self.V)
 
@@ -30,21 +31,21 @@ def _init_gradient_forms_impl(self):
         ds_i = self.dirichlet_measures[i]
         mid = self.dirichlet_marker_ids[i]
 
-        # Adjoint contribution: (-k ∇p·n) * v on ΓD
+        # Adjoint contribution: (-k ∇p·n) v on ΓD
         flux_form = (
             (-self.k_therm * inner(ufl_grad(self._p_placeholder), n)) * v * ds_i(mid)
         )
         self._grad_dirichlet_adj_forms.append(form(flux_form))
 
-        # L2 regularization: alpha_u * dt * uD * v on ΓD
+        # L2 regularization: α_u dt uD v on ΓD
         if self.alpha_u > 1e-16:
             reg_form = self.alpha_u * self.dt * self._uD_placeholder * v * ds_i(mid)
             self._grad_dirichlet_reg_forms.append(form(reg_form))
         else:
             self._grad_dirichlet_reg_forms.append(None)
 
-        # H1 spatial regularization on ΓD (tangential gradient): beta_u * dt * <∇Γ uD, ∇Γ v>_ΓD
-        # Always build it (or set None), so compute_gradient never assembles forms inside loops.
+        # H1 spatial regularization: β_u dt ⟨∇_Γ uD, ∇_Γ v⟩_ΓD
+        # Always build or set None, so compute_gradient never compiles forms in loops
         if self.beta_u > 1e-16:
             tg_u = self.tgrad(self._uD_placeholder)
             tg_v = self.tgrad(v)
@@ -59,11 +60,11 @@ def _init_gradient_forms_impl(self):
     for i in range(self.n_ctrl_neumann):
         mid = self.neumann_marker_ids[i]
 
-        # Adjoint: -p * v on Γ
+        # Adjoint: -p v on Γ
         adj_form = -self._p_placeholder * v * self.ds_neumann(mid)
         self._grad_neumann_adj_forms.append(form(adj_form))
 
-        # L2 reg: alpha_u * dt * q * v on Γ
+        # L2 regularization: α_u dt q v on Γ
         if self.alpha_u > 1e-16:
             reg_form = (
                 self.alpha_u * self.dt * self._q_placeholder * v * self.ds_neumann(mid)
@@ -78,11 +79,11 @@ def _init_gradient_forms_impl(self):
     for i in range(self.n_ctrl_distributed):
         chiV = self.chi_distributed_V[i]
 
-        # Adjoint: p * chi * v dx
+        # Adjoint: p χ v dx
         adj_form = self._p_placeholder * chiV * v * dx
         self._grad_distributed_adj_forms.append(form(adj_form))
 
-        # L2 reg: alpha_u * dt * uD * chi * v dx
+        # L2 regularization: α_u dt uD χ v dx
         if self.alpha_u > 1e-16:
             reg_form = self.alpha_u * self.dt * self._uD_placeholder * chiV * v * dx
             self._grad_distributed_reg_forms.append(form(reg_form))
@@ -101,14 +102,9 @@ def compute_gradient_impl(
     q_neumann_funcs_time,
     u_dirichlet_funcs_time,
 ):
-    """
-    Compute gradient via adjoint.
-    - Neumann control è P2 in spazio e time-dependent: self.grad_q_neumann_time[m][i]
-    - Distributed control è P2 in spazio e time-dependent: self.grad_u_distributed_time[m][i]
-    (NOTA: non entra in u_controls, quindi NON incrementare idx per lui)
-    """
+    """Compute gradient via adjoint method for all control types."""
     grad = np.zeros((self.n_ctrl_spatial, self.num_steps))
-    # Inizializza forms se non già fatto
+    # Initialize forms if not yet done
     if not hasattr(self, "_gradient_forms_initialized"):
         self._init_gradient_forms()
 
@@ -173,18 +169,18 @@ def compute_gradient_impl(
             mid = self.dirichlet_marker_ids[i]
             uD_current = u_dirichlet_funcs_time[m][i]
 
-            # Aggiorna placeholder per p
+            # Update placeholder per p
             self._p_placeholder.x.array[:] = p_next.x.array[:]
             self._p_placeholder.x.scatter_forward()
 
-            # Adjoint contribution (usa form pre-compilata)
+            # Adjoint contribution (precompiled form)
             b_adj = assemble_vector(self._grad_dirichlet_adj_forms[i])
             b_adj.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
 
-            # Total RHS (start with adjoint)
+            # Total RHS = adjoint + regularization
             b_total = b_adj.copy()
 
-            # Add L2(Γ) regularization contribution
+            # Add L2(Γ) regularization
             if self.alpha_u > 1e-16:
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
@@ -194,10 +190,10 @@ def compute_gradient_impl(
                 )
                 b_total.axpy(1.0, b_reg_L2)
 
-            # Add H1(Γ) regularization contribution (tangential gradient)
-            # NOTA: H1 spaziale è raro, lasciamo form() qui per ora
+            # Add H1(Γ) regularization (tangential gradient)
+            
             if self.dirichlet_spatial_reg == "H1" and self.beta_u > 1e-16:
-                # Use precompiled H1 form (tangential gradient on ΓD)
+                # Use precompiled H1 form
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
 
@@ -209,9 +205,10 @@ def compute_gradient_impl(
                     )
                     b_total.axpy(1.0, b_reg_H1)
 
+                # .norm() is MPI collective - all ranks must call
+                h1_norm = b_reg_H1.norm()
+                l2_norm = b_reg_L2.norm() if self.alpha_u > 1e-16 else 0.0
                 if self.domain.comm.rank == 0 and m == 0:
-                    h1_norm = b_reg_H1.norm()
-                    l2_norm = b_reg_L2.norm() if self.alpha_u > 1e-16 else 0.0
                     logger.debug(
                         f"H1: m={m}, i={i}: ||b_L2||={l2_norm:.3e}, ||b_H1||={h1_norm:.3e}, ratio={h1_norm / max(l2_norm, 1e-16):.3e}"
                     )
@@ -219,7 +216,7 @@ def compute_gradient_impl(
             # Solve Riesz map: M_dirichlet * gD = b_total
             gD = self.grad_u_dirichlet_time[m][i]
             gD.x.petsc_vec.set(0.0)
-            # Ensure RHS is supported only on ΓD dofs
+            # Ensure RHS is supported only on ΓD DOFs
             imap = self.V.dofmap.index_map
             nloc = imap.size_local + imap.num_ghosts
             all_dofs = np.arange(nloc, dtype=np.int32)
@@ -227,33 +224,65 @@ def compute_gradient_impl(
                 all_dofs, dofs_i.astype(np.int32), assume_unique=False
             ).astype(np.int32)
 
-            # Zero RHS outside ΓD
+            # Zero outside ΓD
             b_total.setValues(off_dofs, np.zeros(len(off_dofs), dtype=PETSc.ScalarType))
             b_total.assemble()
 
             self.ksp_dirichlet[i].solve(b_total, gD.x.petsc_vec)
             gD.x.scatter_forward()
 
-            if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps - 1):
+            if m == 0 or m == self.num_steps - 1:
                 reg_type = (
                     "L2"
                     if self.dirichlet_spatial_reg == "L2"
                     else f"H1(α={self.alpha_u:.1e},β={self.beta_u:.1e})"
                 )
-                logger.debug(
-                    f"GRAD-DIRICHLET-{reg_type} m={m} on ΓD min/max: {float(gD.x.array[dofs_i].min())}, {float(gD.x.array[dofs_i].max())}"
-                )
+
+                vals = gD.x.array[dofs_i]
+                if vals.size > 0:
+                    local_min = float(vals.min())
+                    local_max = float(vals.max())
+                else:
+                    local_min = np.inf
+                    local_max = -np.inf
+
+                gmin = self.domain.comm.allreduce(local_min, op=MPI.MIN)
+                gmax = self.domain.comm.allreduce(local_max, op=MPI.MAX)
+
+                if self.domain.comm.rank == 0:
+                    logger.debug(
+                        f"GRAD-DIRICHLET-{reg_type} m={m} on ΓD min/max: {gmin:.6e}, {gmax:.6e}"
+                    )
+
             # b_total.norm() is MPI collective - all ranks must call
             b_norm = float(b_total.norm()) if m == 0 else 0.0
-            if self.domain.comm.rank == 0 and m == 0:
-                expected_raw = (
-                    self.alpha_u * self.dt * uD_current.x.array[dofs_i].mean()
-                )
-                actual_riesz = gD.x.array[dofs_i].mean()
-                logger.debug(
-                    f"DIRICHLET-GRAD m={m}: uD mean={uD_current.x.array[dofs_i].mean():.6e}, "
-                    f"expected={expected_raw:.6e}, actual={actual_riesz:.6e}, ||b||={b_norm:.6e}"
-                )
+            comm = self.domain.comm
+            vals_u = uD_current.x.array[dofs_i]
+            vals_g = gD.x.array[dofs_i]
+
+            # local sums + counts (safe if empty)
+            sum_u = float(vals_u.sum()) if vals_u.size else 0.0
+            sum_g = float(vals_g.sum()) if vals_g.size else 0.0
+            cnt   = int(vals_u.size)
+
+            # global sums + counts
+            sum_u_g = comm.allreduce(sum_u, op=MPI.SUM)
+            sum_g_g = comm.allreduce(sum_g, op=MPI.SUM)
+            cnt_g   = comm.allreduce(cnt,   op=MPI.SUM)
+
+            if comm.rank == 0 and m == 0:
+                if cnt_g > 0:
+                    mean_u = sum_u_g / cnt_g
+                    mean_g = sum_g_g / cnt_g
+                    expected_raw = self.alpha_u * self.dt * mean_u
+                    actual_riesz = mean_g
+                    logger.debug(
+                        f"DIRICHLET-GRAD m={m}: uD mean={mean_u:.6e}, "
+                        f"expected={expected_raw:.6e}, actual={actual_riesz:.6e}"
+                    )
+                else:
+                    logger.debug(f"DIRICHLET-GRAD m={m}: ΓD has 0 dofs globally (check markers/segment).")
+
 
         # ---- Neumann controls (P2), gradient with proper L2(Γ) integral ----
         for i in range(self.n_ctrl_neumann):
@@ -261,18 +290,18 @@ def compute_gradient_impl(
             dofs_i = self.neumann_dofs[i]
             q_current = q_neumann_funcs_time[m][i]
 
-            # Aggiorna placeholder per p
+            # Update placeholder per p
             self._p_placeholder.x.array[:] = p_next.x.array[:]
             self._p_placeholder.x.scatter_forward()
 
-            # Adjoint contribution (usa form pre-compilata)
+            # Adjoint contribution (precompiled form)
             b_adj = assemble_vector(self._grad_neumann_adj_forms[i])
             b_adj.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
 
-            # Total RHS (start with adjoint)
+            # Total RHS = adjoint + regularization
             b_total = b_adj.copy()
 
-            # Add L2(Γ) regularization contribution
+            # Add L2(Γ) regularization
             if self.alpha_u > 1e-16:
                 self._q_placeholder.x.array[:] = q_current.x.array[:]
                 self._q_placeholder.x.scatter_forward()
@@ -288,10 +317,21 @@ def compute_gradient_impl(
             self.ksp_neumann[i].solve(b_total, gq.x.petsc_vec)
             gq.x.scatter_forward()
 
-            if self.domain.comm.rank == 0 and (m == 0 or m == self.num_steps - 1):
-                logger.debug(
-                    f"GRAD-NEUMANN m={m} on Γ min/max: {float(gq.x.array[dofs_i].min())}, {float(gq.x.array[dofs_i].max())}"
-                )
+            if m == 0 or m == self.num_steps - 1:
+                vals = gq.x.array[dofs_i]
+                if vals.size > 0:
+                    local_min = float(vals.min())
+                    local_max = float(vals.max())
+                else:
+                    local_min = np.inf
+                    local_max = -np.inf
+
+                gmin = self.domain.comm.allreduce(local_min, op=MPI.MIN)
+                gmax = self.domain.comm.allreduce(local_max, op=MPI.MAX)
+
+                if self.domain.comm.rank == 0:
+                    logger.debug(f"GRAD-NEUMANN m={m} on Γ min/max: {gmin:.6e}, {gmax:.6e}")
+
 
             idx += 1
 
@@ -300,18 +340,18 @@ def compute_gradient_impl(
             chiV = self.chi_distributed_V[i]
             uD_current = u_distributed_funcs_time[m][i]
 
-            # Aggiorna placeholder per p
+            # Update placeholder per p
             self._p_placeholder.x.array[:] = p_next.x.array[:]
             self._p_placeholder.x.scatter_forward()
 
-            # Adjoint contribution (usa form pre-compilata)
+            # Adjoint contribution (precompiled form)
             b_adj = assemble_vector(self._grad_distributed_adj_forms[i])
             b_adj.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
 
-            # Total RHS (start with adjoint)
+            # Total RHS = adjoint + regularization
             b_total = b_adj.copy()
 
-            # Add L2 regularization contribution
+            # Add L2 regularization
             if self.alpha_u > 1e-16:
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
@@ -321,7 +361,7 @@ def compute_gradient_impl(
                 )
                 b_total.axpy(1.0, b_reg)
 
-            # Solve Riesz map: M * gD = b_total
+            # Solve Riesz map
             gD = self.grad_u_distributed_time[m][i]
             gD.x.petsc_vec.set(0.0)
             self.ksp_distributed[i].solve(b_total, gD.x.petsc_vec)
@@ -630,7 +670,6 @@ def update_multiplier_mu_impl(
         self._T_cell.interpolate(T_m)
         T_cell = self._T_cell
 
-        # Get old multipliers in DG0
         # Get old multipliers (already DG0)
         muL_old = self.mu_lower_time[m].x.array.copy()
         muU_old = self.mu_upper_time[m].x.array.copy()
@@ -708,12 +747,8 @@ def update_multiplier_mu_impl(
         aL = muL.x.array[:n_local]
         aU = muU.x.array[:n_local]
         if aL.size:
-            max_in_L = max(
-                max_in_L, float(np.max(aL[mask])) if np.any(mask) else 0.0
-            )
-            max_in_U = max(
-                max_in_U, float(np.max(aU[mask])) if np.any(mask) else 0.0
-            )
+            max_in_L = max(max_in_L, float(np.max(aL[mask])) if np.any(mask) else 0.0)
+            max_in_U = max(max_in_U, float(np.max(aU[mask])) if np.any(mask) else 0.0)
             max_out_L = max(
                 max_out_L, float(np.max(aL[~mask])) if np.any(~mask) else 0.0
             )
@@ -724,5 +759,9 @@ def update_multiplier_mu_impl(
         logger.debug(
             f"TEST-MU max_in: muL={max_in_L:.3e} muU={max_in_U:.3e} | max_out: muL={max_out_L:.3e} muU={max_out_U:.3e}"
         )
+    # MPI reduction: each rank only sees local cells, must reduce globally
+    comm = self.domain.comm
+    delta_mu_max = comm.allreduce(delta_mu_max, op=MPI.MAX)
+    feas_inf_max = comm.allreduce(feas_inf_max, op=MPI.MAX)
 
     return delta_mu_max, feas_inf_max

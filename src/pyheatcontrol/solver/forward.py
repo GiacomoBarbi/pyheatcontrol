@@ -1,10 +1,25 @@
 from petsc4py import PETSc
 from ufl import dx, TestFunction
+import numpy as np
+from mpi4py import MPI
+
 
 from dolfinx.fem import form, Function, Constant, assemble_scalar, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
 from pyheatcontrol.logging_config import logger
+
+def _global_minmax(comm, arr):
+    # arr è un numpy array locale (può essere vuoto)
+    if arr.size > 0:
+        lmin = float(arr.min())
+        lmax = float(arr.max())
+    else:
+        lmin = np.inf
+        lmax = -np.inf
+    gmin = comm.allreduce(lmin, op=MPI.MIN)
+    gmax = comm.allreduce(lmax, op=MPI.MAX)
+    return gmin, gmax, arr.size
 
 
 def solve_forward_impl(
@@ -42,12 +57,12 @@ def solve_forward_impl(
     # -------------------------------------------------
     # RHS placeholders + precompiled RHS form (ONE-TIME)
     # -------------------------------------------------
-    # Placeholder per il termine dei moltiplicatori (DG0)
+    # Multiplier term placeholder (DG0)
     mu_sum_cell = Function(self.Vc)
     mu_sum_cell.x.array[:] = 0.0
     mu_sum_cell.x.scatter_forward()
 
-    # Placeholder per i controlli distribuiti (P2)
+    # Distributed control placeholders (P2)
     u_dist_cur = []
     for i in range(self.n_ctrl_distributed):
         f = Function(self.V)
@@ -55,22 +70,22 @@ def solve_forward_impl(
         f.x.scatter_forward()
         u_dist_cur.append(f)
 
-    # Nota: self.q_neumann_funcs[i] esiste già (P2) e tu lo aggiorni nel loop quindi possiamo usarlo direttamente nel form RHS.
-    # Costruisci RHS UFL UNA VOLTA SOLA (usa placeholders e funzioni che cambiano solo nei valori)
+    # self.q_neumann_funcs[i] already exists (P2) and is updated in the loop
+    # Build RHS UFL once (placeholders are updated by value in the time loop)
     L_rhs_ufl = (self.rho_c / dt_c) * T_old * v * dx
 
-    # Distributed term: usa placeholder u_dist_cur[i]
+    # Distributed source term
     for i in range(self.n_ctrl_distributed):
         L_rhs_ufl += u_dist_cur[i] * self.chi_distributed_V[i] * v * dx
 
-    # State-constraint multipliers: usa mu_sum_cell placeholder (DG0)
+    # State-constraint multiplier term (DG0)
     L_rhs_ufl += mu_sum_cell * self.chi_sc_cell * v * dx
 
-    # Neumann term: usa self.q_neumann_funcs aggiornato nel loop
+    # Neumann boundary term
     for i, mid in enumerate(self.neumann_marker_ids):
         L_rhs_ufl += self.q_neumann_funcs[i] * v * self.ds_neumann(mid)
 
-    # Precompila form RHS
+    # Precompile RHS form
     rhs_form = form(L_rhs_ufl)
 
     for step in range(self.num_steps):
@@ -86,70 +101,126 @@ def solve_forward_impl(
             uD_bc[i].x.array[dofs_i] = uD_time.x.array[dofs_i]
             uD_bc[i].x.scatter_forward()
 
-            if step == 0 and self.domain.comm.rank == 0 and i == 0:
-                logger.debug(f"uD_time.x.array[dofs_i] = {uD_time.x.array[dofs_i][:5]}")
-            if step == 0 and self.domain.comm.rank == 0 and self.n_ctrl_dirichlet > 0:
+            if step == 0 and i == 0:
+                comm = self.domain.comm
                 dofs0 = self.dirichlet_dofs[0]
-                logger.debug(
-                    f"uD_bc[0] on ΓD min/max = {float(uD_bc[0].x.array[dofs0].min())}, {float(uD_bc[0].x.array[dofs0].max())}"
-                )
+                vals0 = uD_bc[0].x.array[dofs0]
+                gmin, gmax, nloc = _global_minmax(self.domain.comm, vals0)
+                nglob = self.domain.comm.allreduce(int(nloc), op=MPI.SUM)
+                if self.domain.comm.rank == 0:
+                    logger.debug(f"Dirichlet ΓD dofs: local(rank0)={nloc}, global={nglob}")
+                    logger.debug(f"uD_bc[0] on ΓD global min/max = {gmin:.6e}, {gmax:.6e}")
 
         # -------------------------
         # Neumann control (P2) - keep only boundary DOFs of each segment
         # -------------------------
-        # Handle both [step] (single zone) and [step][i] (multiple zones) formats
+        
         for i in range(self.n_ctrl_neumann):
             dofs_i = self.neumann_dofs[i]
 
-            # start from zero everywhere
+            # zero everywhere, then copy boundary DOFs
             self.q_neumann_funcs[i].x.array[:] = 0.0
 
-            # Get the Function for this zone and time step
-            q_time = q_neumann_funcs_time[step][i]  # ✅ [step][i]
+            
+            q_time = q_neumann_funcs_time[step][i]
 
-            # copy only on the boundary dofs of this Neumann segment
+            
             self.q_neumann_funcs[i].x.array[dofs_i] = q_time.x.array[dofs_i]
             self.q_neumann_funcs[i].x.scatter_forward()
-            # DEBUG
-            if step == 0 and i == 0 and self.domain.comm.rank == 0:
-                logger.debug(
-                    f"step={step}, q_func min/max (global) = "
-                    f"{self.q_neumann_funcs[i].x.array.min():.6e}, "
-                    f"{self.q_neumann_funcs[i].x.array.max():.6e}"
-                )
-                logger.debug(
-                    f"step={step}, q_func min/max (on Γ) = "
-                    f"{self.q_neumann_funcs[i].x.array[dofs_i].min():.6e}, "
-                    f"{self.q_neumann_funcs[i].x.array[dofs_i].max():.6e}"
-                )
 
-        # (optional debug: only first step)
-        if step == 0 and self.n_ctrl_neumann > 0:
-                dofs0 = self.neumann_dofs[0]
-                q0 = self.q_neumann_funcs[0].x.array
-                mid0 = self.neumann_marker_ids[0]
-                # assemble_scalar is MPI collective - all ranks must call it
-                q_int = assemble_scalar(
-                    form(self.q_neumann_funcs[0] * self.ds_neumann(mid0))
-                )
-                if self.domain.comm.rank == 0:
+            # DEBUG (MPI-safe)
+            if step == 0 and i == 0:
+                comm = self.domain.comm
+
+                # --- global min/max (local slice + allreduce) ---
+                a_loc = self.q_neumann_funcs[i].x.array
+                if a_loc.size > 0:
+                    local_min = float(a_loc.min())
+                    local_max = float(a_loc.max())
+                else:
+                    local_min = np.inf
+                    local_max = -np.inf
+
+                gmin = comm.allreduce(local_min, op=MPI.MIN)
+                gmax = comm.allreduce(local_max, op=MPI.MAX)
+
+                # --- boundary min/max on Γ (local dofs slice + allreduce) ---
+                b_loc = self.q_neumann_funcs[i].x.array[dofs_i]
+                if b_loc.size > 0:
+                    local_bmin = float(b_loc.min())
+                    local_bmax = float(b_loc.max())
+                else:
+                    local_bmin = np.inf
+                    local_bmax = -np.inf
+
+                gbmin = comm.allreduce(local_bmin, op=MPI.MIN)
+                gbmax = comm.allreduce(local_bmax, op=MPI.MAX)
+
+                if comm.rank == 0:
                     logger.debug(
-                        f"step=0 q_on_Gamma min/max = {float(q0[dofs0].min())}, {float(q0[dofs0].max())} "
-                        f"| q_global min/max = {float(q0.min())}, {float(q0.max())}"
+                        f"step={step}, q_func min/max (global) = "
+                        f"{gmin:.6e}, {gmax:.6e}"
                     )
-                    logger.debug(f"int_Gamma q ds = {float(q_int)}")
+                    logger.debug(
+                        f"step={step}, q_func min/max (on Γ) = "
+                        f"{gbmin:.6e}, {gbmax:.6e}"
+                    )
+
+
+        
+        if step == 0 and self.n_ctrl_neumann > 0:
+            comm = self.domain.comm
+
+            dofs0 = self.neumann_dofs[0]
+            q0 = self.q_neumann_funcs[0].x.array
+            mid0 = self.neumann_marker_ids[0]
+
+            # assemble_scalar is MPI collective -> all ranks must call
+            q_int = assemble_scalar(form(self.q_neumann_funcs[0] * self.ds_neumann(mid0)))
+
+            # --- q on Gamma (local slice + allreduce) ---
+            vals_g = q0[dofs0]
+            if vals_g.size > 0:
+                local_gmin = float(vals_g.min())
+                local_gmax = float(vals_g.max())
+            else:
+                local_gmin = np.inf
+                local_gmax = -np.inf
+
+            gmin = comm.allreduce(local_gmin, op=MPI.MIN)
+            gmax = comm.allreduce(local_gmax, op=MPI.MAX)
+
+            # --- q global (local slice + allreduce) ---
+            if q0.size > 0:
+                local_min = float(q0.min())
+                local_max = float(q0.max())
+            else:
+                local_min = np.inf
+                local_max = -np.inf
+
+            qmin = comm.allreduce(local_min, op=MPI.MIN)
+            qmax = comm.allreduce(local_max, op=MPI.MAX)
+
+            # q_int is already global from assemble_scalar, but printing only on rank 0
+            if comm.rank == 0:
+                logger.debug(
+                    f"step=0 q_on_Gamma min/max = {gmin:.6e}, {gmax:.6e} "
+                    f"| q_global min/max = {qmin:.6e}, {qmax:.6e}"
+                )
+                logger.debug(f"int_Gamma q ds = {float(q_int):.6e}")
+
 
         # -------------------------
         # RHS (placeholders update + assemble precompiled form)
         # -------------------------
-        # Update distributed control placeholders for this step
+        # Update distributed control placeholders
         for i in range(self.n_ctrl_distributed):
             u_distributed_funcs_time[step][i].x.petsc_vec.copy(
                 u_dist_cur[i].x.petsc_vec
             )
             u_dist_cur[i].x.scatter_forward()
 
-        # Update mu_sum_cell (DG0) for this step (+1 because state is at end of interval)
+        # Update multiplier sum (DG0); +1 because state is at end of interval
         mu_sum_cell.x.array[:] = (
             self.mu_lower_time[step + 1].x.array + self.mu_upper_time[step + 1].x.array
         )
@@ -158,13 +229,13 @@ def solve_forward_impl(
         # -------------------------
         # solve
         # -------------------------
-        # Assemble RHS into a reused vector (allocate once on first step)
+        # Assemble RHS (allocate on first step, reuse thereafter)
         if step == 0:
-            b = assemble_vector(rhs_form)  # allocates Vec
+            b = assemble_vector(rhs_form)
         else:
             with b.localForm() as b_loc:
                 b_loc.set(0.0)
-            assemble_vector(b, rhs_form)  # fills existing Vec
+            assemble_vector(b, rhs_form)
 
         apply_lifting(b, [self.a_state_compiled], bcs=[bc_list])
         b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
@@ -173,19 +244,26 @@ def solve_forward_impl(
         self.ksp.solve(b, T.x.petsc_vec)
         T.x.scatter_forward()
 
-        if step == 0 and self.domain.comm.rank == 0 and self.n_ctrl_dirichlet > 0:
-            dofs_check = self.dirichlet_dofs[0]
-            logger.debug(f"T after solve on ΓD = {T.x.array[dofs_check][:5]}")
+        if step == self.num_steps - 1:
+            comm = self.domain.comm
 
-        if step == self.num_steps - 1 and self.domain.comm.rank == 0:
-            logger.debug(
-                f"T global min/max: {float(T.x.array.min()):.12e} {float(T.x.array.max()):.12e}"
-            )
+            # Global min/max of T (true global)
+            gminT, gmaxT, _ = _global_minmax(comm, T.x.array)
+            if comm.rank == 0:
+                logger.debug(f"T global min/max: {gminT:.12e} {gmaxT:.12e}")
+
             if self.n_ctrl_dirichlet > 0:
                 dofsD = self.dirichlet_dofs[0]
-                logger.debug(
-                    f"T on ΓD min/max: {float(T.x.array[dofsD].min()):.12e} {float(T.x.array[dofsD].max()):.12e}"
-                )
+
+                # keep only owned dofs (avoid ghost indices)
+                nloc = self.V.dofmap.index_map.size_local
+                dofsD_owned = dofsD[dofsD < nloc]
+
+                vals = T.x.array[dofsD_owned]
+                gmin, gmax, _ = _global_minmax(comm, vals)
+                if comm.rank == 0:
+                    logger.debug(f"T_final on ΓD min/max: {gmin:.12e} {gmax:.12e}")
+
 
         T.x.petsc_vec.copy(T_old.x.petsc_vec)
         T_old.x.scatter_forward()

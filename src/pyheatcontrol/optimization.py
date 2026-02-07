@@ -13,7 +13,7 @@ from pyheatcontrol.logging_config import logger
 
 
 def optimization_time_dependent(args):
-    """Ottimizzazione con time-dependent control e adjoint-based gradient"""
+    """Time-dependent optimal control with adjoint-based gradient."""
 
     comm = MPI.COMM_WORLD
     rank = comm.rank
@@ -49,6 +49,20 @@ def optimization_time_dependent(args):
     ctrl_distributed_boxes = [parse_box(s) for s in args.control_distributed]
     target_boxes = [parse_box(s) for s in args.target_zone]
     constraint_boxes = [parse_box(s) for s in args.constraint_zone]
+    neumann_by_side = {"x0": [], "xL": [], "y0": [], "yL": []}
+    for side, tmin, tmax in ctrl_neumann:
+        neumann_by_side[side].append((tmin, tmax))
+    fully_neumann_count = 0
+    for side in ["x0", "xL", "y0", "yL"]:
+        segments = neumann_by_side[side]
+        total_coverage = sum(tmax - tmin for tmin, tmax in segments)
+        if total_coverage >= 0.99:
+            fully_neumann_count += 1
+    if fully_neumann_count == 4 and len(ctrl_dirichlet) == 0:
+        if rank == 0:
+            logger.error("ERROR: All 4 sides have only Neumann conditions without any Dirichlet.")
+            logger.error("Problem is ill-posed. Add at least one Dirichlet segment (fixed or controlled).")
+        raise ValueError("Ill-posed problem: 4 Neumann sides without Dirichlet")
     # ------------------------------------------------------------
     # Safety check: no controls and no zones → pure forward run
     # ------------------------------------------------------------
@@ -86,7 +100,7 @@ def optimization_time_dependent(args):
     # Mesh
     domain = create_mesh(args.n, L)
     V = functionspace(domain, ("Lagrange", 2))
-    # Aggiungi:
+    
     if rank == 0:
         logger.debug(f"Domain bounds: x=[0, {L}], y=[0, {L}]")
         logger.debug("Target zones in physical coords:")
@@ -118,73 +132,112 @@ def optimization_time_dependent(args):
         args.dirichlet_spatial_reg,
     )
 
-    # === NEW: Neumann control as space-time Function (P2 in space) ===
+    # Neumann control: space-time Function (P2 in space)
     u_neumann_funcs_time = []
     for _ in range(num_steps):
         row = []
         for i in range(solver.n_ctrl_neumann):
             q = Function(V)
-            q.x.array[:] = 0.0  # Zero everywhere
+            q.x.array[:] = 0.0
             dofs_i = solver.neumann_dofs[i]
-            q.x.array[dofs_i] = args.u_init  # u_init only on ΓN
+            q.x.array[dofs_i] = args.u_init
             q.x.scatter_forward()
             row.append(q)
         u_neumann_funcs_time.append(row)
 
-    # Dirichlet controls: Function(V) per zone per time step
+    # Dirichlet control: Function(V) per zone per time step
     u_dirichlet_funcs_time = []
     for _ in range(num_steps):
         row = []
         for i in range(solver.n_ctrl_dirichlet):
             uD_dir = Function(V)
-            uD_dir.x.array[:] = 0.0  # Zero everywhere
+            uD_dir.x.array[:] = 0.0
             dofs_i = solver.dirichlet_dofs[i]
-            uD_dir.x.array[dofs_i] = args.u_init  # u_init only on ΓD
+            uD_dir.x.array[dofs_i] = args.u_init
             uD_dir.x.scatter_forward()
             row.append(uD_dir)
         u_dirichlet_funcs_time.append(row)
 
-    # Debug check
-    if rank == 0 and solver.n_ctrl_dirichlet > 0:
+    # Debug check (MPI-safe)
+    if solver.n_ctrl_dirichlet > 0:
         uD_test = u_dirichlet_funcs_time[0][0]
         dofs_test = solver.dirichlet_dofs[0]
-        logger.debug(
-            f"uD_Dirichlet(t=0) global min/max = {uD_test.x.array.min():.6e}, {uD_test.x.array.max():.6e}"
-        )
-        logger.debug(
-            f"uD_Dirichlet(t=0) on ΓD min/max = {uD_test.x.array[dofs_test].min():.6e}, {uD_test.x.array[dofs_test].max():.6e}"
-        )
 
-    # === NEW: Distributed control as space-time Function (P2 in space) ===
+        # Global min/max over all DOFs
+        a_loc = uD_test.x.array
+        if a_loc.size > 0:
+            local_min = float(a_loc.min())
+            local_max = float(a_loc.max())
+        else:
+            local_min = np.inf
+            local_max = -np.inf
+
+        gmin = comm.allreduce(local_min, op=MPI.MIN)
+        gmax = comm.allreduce(local_max, op=MPI.MAX)
+
+        # Global min/max over boundary DOFs (ΓD)
+        b_loc = uD_test.x.array[dofs_test]
+        if b_loc.size > 0:
+            local_bmin = float(b_loc.min())
+            local_bmax = float(b_loc.max())
+        else:
+            local_bmin = np.inf
+            local_bmax = -np.inf
+
+        gbmin = comm.allreduce(local_bmin, op=MPI.MIN)
+        gbmax = comm.allreduce(local_bmax, op=MPI.MAX)
+
+        if rank == 0:
+            logger.debug(
+                f"uD_Dirichlet(t=0) global min/max = {gmin:.6e}, {gmax:.6e}"
+            )
+            logger.debug(
+                f"uD_Dirichlet(t=0) on ΓD min/max = {gbmin:.6e}, {gbmax:.6e}"
+            )
+
+
+    # Distributed control: space-time Function (P2 in space)
     u_distributed_funcs_time = []
     for _ in range(num_steps):
         row = []
         for i in range(solver.n_ctrl_distributed):
             uD = Function(V)
-            uD.x.array[:] = 0.0  # ✅ Zero everywhere
-            # Set u_init only on DOFs in Ωc
+            uD.x.array[:] = 0.0
+            
             dofs_c = solver.distributed_dofs[i]
             uD.x.array[dofs_c] = args.u_init
             uD.x.scatter_forward()
             row.append(uD)
         u_distributed_funcs_time.append(row)
 
-    # === DEBUG: Verify initialization ===
-    if rank == 0 and solver.n_ctrl_distributed > 0:
+    # Debug: verify distributed control initialization (MPI-safe)
+    if solver.n_ctrl_distributed > 0:
         uD_test = u_distributed_funcs_time[0][0]
         dofs_test = solver.distributed_dofs[0]
-        logger.debug(
-            f"uD(t=0) global min/max = {uD_test.x.array.min():.6e}, {uD_test.x.array.max():.6e}"
-        )
-        logger.debug(
-            f"uD(t=0) on Ωc min/max = {uD_test.x.array[dofs_test].min():.6e}, {uD_test.x.array[dofs_test].max():.6e}"
-        )
-        logger.debug(f"Number of DOFs in Ωc: {len(dofs_test)}")
-        logger.debug(f"Total DOFs in V: {len(uD_test.x.array)}")
+        a_loc = uD_test.x.array
+        if a_loc.size > 0:
+            loc_min, loc_max = float(a_loc.min()), float(a_loc.max())
+        else:
+            loc_min, loc_max = np.inf, -np.inf
+        gmin = comm.allreduce(loc_min, op=MPI.MIN)
+        gmax = comm.allreduce(loc_max, op=MPI.MAX)
+        b_loc = uD_test.x.array[dofs_test]
+        if b_loc.size > 0:
+            loc_bmin, loc_bmax = float(b_loc.min()), float(b_loc.max())
+        else:
+            loc_bmin, loc_bmax = np.inf, -np.inf
+        gbmin = comm.allreduce(loc_bmin, op=MPI.MIN)
+        gbmax = comm.allreduce(loc_bmax, op=MPI.MAX)
+        n_dofs_local = len(dofs_test)
+        n_dofs_global = comm.allreduce(n_dofs_local, op=MPI.SUM)
+        if rank == 0:
+            logger.debug(f"uD(t=0) global min/max = {gmin:.6e}, {gmax:.6e}")
+            logger.debug(f"uD(t=0) on Ωc min/max = {gbmin:.6e}, {gbmax:.6e}")
+            logger.debug(f"Number of DOFs in Ωc (global): {n_dofs_global}")
 
     has_constraints = len(constraint_boxes) > 0
 
-    # --- definisci sempre la finestra (serve comunque per range/print) ---
+    # Constraint time window (always defined, even without constraints)
     sc_start_time = args.sc_start_time if args.sc_start_time is not None else 0.0
     sc_end_time = args.sc_end_time if args.sc_end_time is not None else T_final_time
     sc_start_step = int(sc_start_time / dt)
@@ -192,7 +245,7 @@ def optimization_time_dependent(args):
     sc_start_step = max(0, min(sc_start_step, num_steps))
     sc_end_step = max(sc_start_step, min(sc_end_step, num_steps))
 
-    # --- inizializza SEMPRE mu_lower_time / mu_upper_time (tutti zero) ---
+    # Initialize multipliers to zero (always, even without constraints)
     Vc = functionspace(domain, ("DG", 0))
     solver.mu_lower_time = []
     solver.mu_upper_time = []
@@ -205,21 +258,14 @@ def optimization_time_dependent(args):
         solver.mu_upper_time.append(mu_U)
 
     if rank == 0 and has_constraints:
-        logger.info(
-            f"\nPATH-CONSTRAINT Window: t ∈ [{sc_start_time:.1f}, {sc_end_time:.1f}]s"
-        )
-        logger.info(
-            f"PATH-CONSTRAINT Steps: m ∈ [{sc_start_step}, {sc_end_step}] (of {num_steps})"
-        )
+        logger.info(f"\nPATH-CONSTRAINT Window: t ∈ [{sc_start_time:.1f}, {sc_end_time:.1f}]s")
+        logger.info(f"PATH-CONSTRAINT Steps: m ∈ [{sc_start_step}, {sc_end_step}] (of {num_steps})")
         if args.sc_lower is not None:
             logger.info(f"PATH-CONSTRAINT Lower bound: T ≥ {args.sc_lower:.1f}°C")
         if args.sc_upper is not None:
             logger.info(f"PATH-CONSTRAINT Upper bound: T ≤ {args.sc_upper:.1f}°C")
-        logger.info(
-            f"PATH-CONSTRAINT Initialized {len(solver.mu_lower_time)} multiplier functions"
-        )
+        logger.info(f"PATH-CONSTRAINT Initialized {len(solver.mu_lower_time)} multiplier functions")
 
-    # Aggiungi:
     if rank == 0:
         x_cells = domain.geometry.x
         cell_dofmap = domain.geometry.dofmap
@@ -233,49 +279,29 @@ def optimization_time_dependent(args):
                 for j, c in enumerate(centers[:5]):
                     logger.debug(f"  Cell {j}: ({c[0]:.4f}, {c[1]:.4f})")
 
-    n_ctrl_scalar = solver.n_ctrl_scalar
-    n_vars_total = n_ctrl_scalar * num_steps
-
-    if rank == 0:
         logger.info("\nOPTIMIZATION")
-        logger.info(
-            f"  Scalar controls (u_controls): {n_ctrl_scalar} (Dirichlet={solver.n_ctrl_dirichlet}, Neumann={solver.n_ctrl_neumann})"
-        )
-        logger.info(
-            f"  Distributed controls (Function(V) per step): {solver.n_ctrl_distributed}"
-        )
-        logger.info(
-            f"  Control time steps (intervals): {num_steps}  (State nodes Nt={Nt})"
-        )
-        logger.info(f"  Total variables: {n_vars_total}")
+        logger.info(f"  Boundary controls: Dirichlet={solver.n_ctrl_dirichlet}, Neumann={solver.n_ctrl_neumann}")
+        logger.info(f"  Box controls (Function(V) per step): {solver.n_ctrl_distributed}")
+        logger.info(f"  Control time steps (intervals): {num_steps}  (State nodes Nt={Nt})")
         logger.info(f"  SC: beta={args.beta}, maxit={args.sc_maxit}")
         logger.info(f"  Gradient descent: lr={args.lr}, inner_maxit={args.inner_maxit}")
-        logger.info(
-            f"  Regularization: α_track={args.alpha_track}, α_u={args.alpha_u}, γ_u={args.gamma_u}"
-        )
+        logger.info(f"  Regularization: α_track={args.alpha_track}, α_u={args.alpha_u}, γ_u={args.gamma_u}")
         logger.debug("Target zones cells:")
         for i, marker in enumerate(solver.target_markers):
             n_cells = np.sum(marker)
             logger.debug(f"  Zone {i + 1}: {n_cells} cells marked")
 
-    # Initial guess
-    if n_ctrl_scalar > 0:
-        u_controls = np.full((n_ctrl_scalar, num_steps), args.u_init, dtype=float)
-    else:
-        u_controls = np.zeros((0, num_steps), dtype=float)
-
-    if rank == 0:
         if has_constraints and args.sc_maxit > 0:
             logger.info("\nSC LOOP Starting...\n")
         else:
             logger.info("\nSC LOOP skipped (no constraints or sc_maxit=0)\n")
 
+    u_controls = np.zeros((0, num_steps), dtype=float)
     sc_iter = -1
 
     # Moreau-Yosida loop
     for sc_iter in range(args.sc_maxit):
-
-        # Inner optimization
+        # Inner gradient descent loop
         for inner_iter in range(args.inner_maxit):
             Y_all = solver.solve_forward(
                 u_neumann_funcs_time,
@@ -300,18 +326,18 @@ def optimization_time_dependent(args):
                 u_dirichlet_funcs_time,
             )
 
-            # Update Dirichlet controls (Function(V) on ΓD)
+            # Update Dirichlet controls on ΓD
             if solver.n_ctrl_dirichlet > 0:
                 for j in range(solver.n_ctrl_dirichlet):
                     dofs_j = solver.dirichlet_dofs[j]
                     for m in range(num_steps):
                         uD = u_dirichlet_funcs_time[m][j]
                         gD = solver.grad_u_dirichlet_time[m][j]
-                        # Update only on ΓD
+                        
                         uD.x.array[dofs_j] -= args.lr * gD.x.array[dofs_j]
                         uD.x.scatter_forward()
 
-            # UPDATE Neumann (time-dependent, space-dependent)
+            # Update Neumann controls
             if solver.n_ctrl_neumann > 0:
                 for i in range(solver.n_ctrl_neumann):
                     dofs_i = solver.neumann_dofs[i]
@@ -328,14 +354,14 @@ def optimization_time_dependent(args):
                         f"q(tend) min/max = {u_neumann_funcs_time[-1][0].x.array.min()}, {u_neumann_funcs_time[-1][0].x.array.max()}"
                     )
 
-            # UPDATE distributed (time-dependent, space-dependent)
+            # Update distributed controls
             if solver.n_ctrl_distributed > 0:
                 for j in range(solver.n_ctrl_distributed):
-                    dofs_j = solver.distributed_dofs[j]  # ✅ DOF in Ωc
+                    dofs_j = solver.distributed_dofs[j]
                     for m in range(num_steps):
                         uD = u_distributed_funcs_time[m][j]
                         gD = solver.grad_u_distributed_time[m][j]
-                        uD.x.array[dofs_j] -= args.lr * gD.x.array[dofs_j]  # ✅ Solo Ωc
+                        uD.x.array[dofs_j] -= args.lr * gD.x.array[dofs_j]
                         uD.x.scatter_forward()
                 if rank == 0:
                     a0 = u_distributed_funcs_time[0][0].x.array
@@ -369,37 +395,44 @@ def optimization_time_dependent(args):
                 logger.debug(f"u_old = {u_controls.copy()}")
                 logger.debug(f"grad = {grad.copy()}")
 
-            # norma del gradiente: include anche controlli Function(P2)
+            # Gradient norm (includes all Function(P2) controls)
             grad_sq = 0.0
 
-            # scalari (se esistono)
+            # Scalar controls (if any)
             if grad.size > 0:
                 grad_sq += float(np.sum(grad**2))
 
-            # Dirichlet Function(P2) su ΓD (solo dofs del bordo)
+            # Dirichlet Function(P2) on ΓD (owned DOFs only)
             if solver.n_ctrl_dirichlet > 0:
+                nloc = V.dofmap.index_map.size_local
                 for j in range(solver.n_ctrl_dirichlet):
                     dofs_j = solver.dirichlet_dofs[j]
+                    dofs_j_owned = dofs_j[dofs_j < nloc]
                     for m in range(num_steps):
                         gD = solver.grad_u_dirichlet_time[m][j]
-                        grad_sq += float(np.sum(gD.x.array[dofs_j] ** 2))
+                        grad_sq += float(np.sum(gD.x.array[dofs_j_owned] ** 2))
 
-            # Neumann Function(P2) su Gamma (solo dofs del bordo)
+            # Neumann Function(P2) on Γ (owned DOFs only)
             if solver.n_ctrl_neumann > 0:
+                nloc = V.dofmap.index_map.size_local
                 for i in range(solver.n_ctrl_neumann):
                     dofs_i = solver.neumann_dofs[i]
+                    dofs_i_owned = dofs_i[dofs_i < nloc]
                     for m in range(num_steps):
                         g = solver.grad_q_neumann_time[m][i]
-                        grad_sq += float(np.sum(g.x.array[dofs_i] ** 2))
+                        grad_sq += float(np.sum(g.x.array[dofs_i_owned] ** 2))
 
-            # Distributed Function(P2) in Omega (tutti i dofs)
+            # Distributed Function(P2) in Ω (owned DOFs only)
             if solver.n_ctrl_distributed > 0:
+                nloc = V.dofmap.index_map.size_local
                 for j in range(solver.n_ctrl_distributed):
+                    dofs_j = solver.distributed_dofs[j]
+                    dofs_j_owned = dofs_j[dofs_j < nloc]
                     for m in range(num_steps):
                         gD = solver.grad_u_distributed_time[m][j]
-                        dofs_j = solver.distributed_dofs[j]
-                        grad_sq += np.sum(gD.x.array[dofs_j] ** 2)
+                        grad_sq += np.sum(gD.x.array[dofs_j_owned] ** 2)
 
+            grad_sq = comm.allreduce(grad_sq, op=MPI.SUM)
             grad_norm = np.sqrt(grad_sq)
             # ============================================================
             # Recompute STATE and COST after updating Function controls
@@ -418,14 +451,37 @@ def optimization_time_dependent(args):
                 Y_all,
                 T_cure,
             )
-            # if rank == 0 and inner_iter % 5 == 0:
+
+            if solver.n_ctrl_dirichlet > 0:
+                dofs = solver.bc_dofs_list_dirichlet[0]
+                u_loc = u_dirichlet_funcs_time[0][0].x.array[dofs]
+                tag = "Dir0"
+            elif solver.n_ctrl_neumann > 0:
+                u_loc = u_neumann_funcs_time[0][0].x.array
+                tag = "Neu0"
+            elif solver.n_ctrl_distributed > 0:
+                u_loc = u_distributed_funcs_time[0][0].x.array
+                tag = "Box0"
+            else:
+                u_loc = None
+                tag = None
+
+            if u_loc is None or u_loc.size == 0:
+                loc_min = float("inf")
+                loc_max = float("-inf")
+            else:
+                loc_min = float(u_loc.min())
+                loc_max = float(u_loc.max())
+
+            gmin = comm.allreduce(loc_min, op=MPI.MIN)
+            gmax = comm.allreduce(loc_max, op=MPI.MAX)
+
             if rank == 0:
-                if grad.size > 0:
-                    u_mean = np.mean(u_controls)
-                    u_std = np.std(u_controls)
-                    u_info = f"{u_mean:.1f}±{u_std:.1f}"
+                if tag is None or gmin == float("inf") or gmax == float("-inf"):
+                    u_info = "no controls"
                 else:
-                    u_info = "n/a (no scalar controls)"
+                    u_info = f"{tag}=[{gmin:.2f},{gmax:.2f}]"
+
 
                 print(
                     f"  Inner {inner_iter:2d}: J={J:.3e} (track={J_track:.3e}, "
@@ -438,7 +494,7 @@ def optimization_time_dependent(args):
                     print(f"  [Inner converged at iter {inner_iter}]")
                 break
 
-        # functionspace/Function/interpolate are MPI collective - all ranks must call
+        # functionspace/Function/interpolate are MPI collective
         Vc = functionspace(domain, ("DG", 0))
         Tcell = Function(Vc)
         Tcell.interpolate(Y_all[-1])
@@ -527,10 +583,9 @@ def optimization_time_dependent(args):
         T_cure,
     )
     n_ctrl_total = (
-            solver.n_ctrl_dirichlet + solver.n_ctrl_neumann + solver.n_ctrl_distributed
-        )
+        solver.n_ctrl_dirichlet + solver.n_ctrl_neumann + solver.n_ctrl_distributed
+    )
     if rank == 0:
-
         print("[FINAL RESULTS]")
         print(f"  SC iterations: {sc_iter + 1}")
         print(
@@ -538,7 +593,7 @@ def optimization_time_dependent(args):
             f"L2={J_reg_L2_final:.3e}, H1={J_reg_H1_final:.3e})"
         )
     # ============================================================
-    # DIAGNOSTICA H1 TEMPORALE (Distributed controls)
+    # H1 temporal regularization diagnostics (distributed controls)
     # ============================================================
     if solver.n_ctrl_distributed > 0:
         from dolfinx.fem import form, assemble_scalar
@@ -557,11 +612,11 @@ def optimization_time_dependent(args):
         for j in range(solver.n_ctrl_distributed):
             chiV = solver.chi_distributed_V[j]
 
-            # --- misura globale di Ωc (serve MPI allreduce) ---
+            # Global measure of Ωc
             meas_loc = assemble_scalar(form(chiV * dx))
             meas = comm.allreduce(meas_loc, op=MPI.SUM)
 
-            # --- den globale (uguale a meas, ma lo teniamo separato per chiarezza) ---
+            # Global denominator
             den_loc = assemble_scalar(form(chiV * dx))
             den = comm.allreduce(den_loc, op=MPI.SUM)
 
@@ -572,14 +627,14 @@ def optimization_time_dependent(args):
             rough2 = 0.0
             max_step_L2 = 0.0
 
-            # Campioni della media spaziale su Ωc (10 punti)
+            # Sample spatial mean over Ωc (10 points)
             sample_means = []
             stride = max(1, (num_steps - 1) // 10)
             sample_idx = list(range(0, num_steps, stride))
             if (num_steps - 1) not in sample_idx:
                 sample_idx.append(num_steps - 1)
 
-            # serie media (con numeratore globale)
+            # Spatial mean over Ωc (with global numerator)
             for m in sample_idx:
                 um = u_distributed_funcs_time[m][j]
                 num_loc = assemble_scalar(form(um * chiV * dx))
@@ -587,7 +642,7 @@ def optimization_time_dependent(args):
                 mean_um = float(num / den) if den > 1e-14 else float("nan")
                 sample_means.append((m * solver.dt, mean_um))
 
-            # roughness vera (L2 su Ωc) — step per step con allreduce
+            # L2 roughness over Ωc (step by step with allreduce)
             for m in range(num_steps - 1):
                 u0 = u_distributed_funcs_time[m][j]
                 u1 = u_distributed_funcs_time[m + 1][j]
@@ -612,15 +667,15 @@ def optimization_time_dependent(args):
                 for t, mu in sample_means:
                     logger.debug(f"    t={t:8.1f}s  mean(u)={mu:+.6e}")
 
-        # ---------- STATISTICHE ----------
+        # Control statistics
         for ic in range(n_ctrl_total):
             if ic < solver.n_ctrl_dirichlet:
-                # Dirichlet: STAMPA IL CONTROLLO REALE uD(t) SU ΓD
+                # Dirichlet: real control uD(t) on ΓD
                 unit = "°C"
                 j = ic
                 label = f"Dirichlet {j}"
                 dofs = solver.dirichlet_dofs[j]
-                # media spaziale su ΓD, per ogni time step
+                # spatial mean on ΓD per time step
                 vals_t = np.array(
                     [
                         u_dirichlet_funcs_time[m][j].x.array[dofs].mean()
@@ -635,12 +690,12 @@ def optimization_time_dependent(args):
                     f"max={vals_t.max():.6e}"
                 )
             elif ic < solver.n_ctrl_dirichlet + solver.n_ctrl_neumann:
-                # Neumann: STAMPA IL CONTROLLO REALE q(t) SU Γ
+                # Neumann: real control q(t) on Γ
                 unit = "(flux units)"
                 j = ic - solver.n_ctrl_dirichlet
                 label = f"Neumann {j}"
                 dofs = solver.neumann_dofs[j]
-                # media spaziale su Gamma, per ogni time step
+                # spatial mean on Γ per time step
                 vals_t = np.array(
                     [
                         u_neumann_funcs_time[m][j].x.array[dofs].mean()
@@ -658,7 +713,7 @@ def optimization_time_dependent(args):
                 unit = "(source units)"
                 j = ic - solver.n_ctrl_dirichlet - solver.n_ctrl_neumann
                 label = f"Distributed {j}"
-                # statistiche sul controllo REALE uD(t) in Ω (qui: media su tutti i dofs di V)
+                # distributed control uD(t) in Ω (mean over all DOFs of V)
                 vals_t = np.array(
                     [
                         u_distributed_funcs_time[m][j].x.array.mean()
@@ -673,7 +728,7 @@ def optimization_time_dependent(args):
                     f"max={vals_t.max():.6e}"
                 )
 
-        # ---------- EVOLUZIONE TEMPORALE (sottocampionata) ----------
+        # Time evolution (subsampled)
         if n_ctrl_total > 0:
             step_stride = max(1, num_steps // 10)
             logger.debug(
@@ -688,7 +743,7 @@ def optimization_time_dependent(args):
                     dofs = solver.dirichlet_dofs[j]
 
                     def get_val(t_idx):
-                        # media spaziale su ΓD al tempo t_idx
+                        # spatial mean on ΓD at time t_idx
                         return float(
                             u_dirichlet_funcs_time[t_idx][j].x.array[dofs].mean()
                         )
@@ -699,7 +754,7 @@ def optimization_time_dependent(args):
                     dofs = solver.neumann_dofs[j]
 
                     def get_val(t_idx):
-                        # media spaziale su Gamma al tempo t_idx
+                        # spatial mean on Γ at time t_idx
                         return float(
                             u_neumann_funcs_time[t_idx][j].x.array[dofs].mean()
                         )
@@ -720,17 +775,18 @@ def optimization_time_dependent(args):
                 for t_idx in idxs:
                     t_val = t_idx * dt
                     logger.info(f"    t={t_val:8.1f}s: u={get_val(t_idx):.6e} {unit}")
-                # held-last (ultimo controllo applicato)
+                # held-last (final control applied)
                 logger.info(
                     f"    t={T_final_time:8.1f}s: u={get_val(num_steps - 1):.6e} {unit}  (held-last)"
                 )
 
     T_final_diag = Y_final_all[-1]
 
-    # --- POSTPROCESSING CORRETTO DELLA TEMPERATURA MEDIA IN TARGET ZONE ---
-    # functionspace/Function/assemble_scalar are MPI collective - all ranks must call
+    # Postprocessing: mean temperature in target zones
+    # functionspace/Function/assemble_scalar are MPI collective
     V0_dg0 = functionspace(domain, ("DG", 0))
     from dolfinx.fem import assemble_scalar, form
+
     dx = ufl.Measure("dx", domain=domain)
 
     for i, marker in enumerate(solver.target_markers):
@@ -745,8 +801,11 @@ def optimization_time_dependent(args):
         Tcell_sc = Function(Vc)
         Tcell_sc.interpolate(T_final_diag)
 
-        zone_integral = assemble_scalar(form(T_cell * chi_dg0 * dx))
-        chi_integral = assemble_scalar(form(chi_dg0 * dx))
+        zone_integral_local = assemble_scalar(form(T_cell * chi_dg0 * dx))
+        chi_integral_local = assemble_scalar(form(chi_dg0 * dx))
+
+        zone_integral = comm.allreduce(zone_integral_local, op=MPI.SUM)
+        chi_integral = comm.allreduce(chi_integral_local, op=MPI.SUM)
 
         if rank == 0:
             mask = solver.sc_marker.astype(bool)
@@ -783,7 +842,7 @@ def optimization_time_dependent(args):
         save_visualization_output(
             solver,
             Y_final_all,
-            P_final_all,  # ← Usa Y_final_all invece di Y_all!
+            P_final_all,
             u_distributed_funcs_time,
             u_neumann_funcs_time,
             u_dirichlet_funcs_time,

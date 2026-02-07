@@ -1,30 +1,109 @@
+# PyHeatControl
 
-Time-dependent optimal control for the heat equation with **FEniCSx**:
-- Dirichlet boundary control
-- Neumann boundary control (flux)
-- Distributed control (source term)
-- Adjoint-based gradient
-- Path state constraints via Moreau–Yosida / SC loop
+Time-dependent **PDE-constrained optimal control** for the heat equation using **FEniCSx / dolfinx**.
+
+The library implements a fully discrete **discretize-then-optimize adjoint workflow** consistent with the accompanying paper.
+
+Main features:
+
+- implicit Euler time stepping
+- discrete adjoint (backward solve)
+- adjoint-based gradients
+- heterogeneous actuators:
+  - Dirichlet boundary temperature
+  - Neumann boundary heat flux
+  - distributed volumetric heat sources
+- L² + H¹-in-time control regularization
+- time-window **state constraints** enforced via Moreau–Yosida / augmented Lagrangian
+- segregated optimization loop: forward → adjoint → gradient → projected update
+- native **MPI parallel execution** (PETSc + dolfinx)
+
+---
 
 ## Requirements
-- Python 3.10+
-- dolfinx (FEniCSx)
-- mpi4py
-- petsc4py
-- numpy
-- ruff (optional, for linting)
 
-## Quick run
+⚠️ **dolfinx must be installed from conda-forge (pip installation is not supported).**
 
-Run from the project root.
+Recommended setup:
 
-Example (Dirichlet control on y=L, default target/constraint box):
 ```bash
-python3 scripts/main.py \
-  --n 5 --dt 20 --T-final 600 --L 0.1 \
-  --k 0.15 --rho 1100 --c 1500 \
-  --T-ambient 25 --T-cure 160 \
-  --alpha-track 1.0 --alpha-u 1e-4 --gamma-u 1e-2 \
-  --beta 1e3 --sc-maxit 1 --inner-maxit 1 \
-  --lr 5.0 --grad-tol 1e-3 \
-  --output-dir resu --output-freq 1 --no-vtk
+conda create -n fenicsx -c conda-forge python=3.11 fenics-dolfinx mpi4py petsc4py
+conda activate fenicsx
+pip install -e .
+```
+
+---
+
+## Quick start (serial)
+
+```bash
+pyheatcontrol --n 5 --dt 20 --T-final 600
+```
+
+---
+
+## Running
+
+### Installed CLI (recommended)
+
+```bash
+pyheatcontrol --help
+```
+
+Example:
+
+```bash
+pyheatcontrol --n 5 --dt 20 --T-final 600 --alpha-track 1.0 --alpha-u 1e-4 --gamma-u 1e-2
+```
+
+### Development mode (without install)
+
+```bash
+python scripts/main.py ...
+```
+
+---
+
+## Parallel execution (MPI)
+
+Run on multiple processes:
+
+```bash
+mpirun -n 4 pyheatcontrol --n 5 --dt 20 --T-final 600
+```
+
+Serial execution works automatically without `mpirun`.
+
+---
+
+## Project structure
+
+```
+src/pyheatcontrol/
+  solver/
+    forward.py
+    adjoint.py
+    gradient.py
+  optimization.py
+  cli.py
+
+scripts/
+  main.py
+```
+
+---
+
+## Code quality
+
+```bash
+ruff check . --fix
+ruff format .
+```
+
+---
+
+## CLI options
+
+```bash
+pyheatcontrol --help
+```

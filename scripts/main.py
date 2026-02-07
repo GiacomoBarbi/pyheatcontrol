@@ -10,6 +10,7 @@ Features:
 - State constraints con Moreau-Yosida
 - Storage di tutte le soluzioni Y per adjoint
 """
+
 from mpi4py import MPI
 import argparse
 import time
@@ -17,14 +18,15 @@ import time
 from pyheatcontrol.io_utils import _import_sanity_check
 from pyheatcontrol.cli import build_parser
 from pyheatcontrol.optimization import optimization_time_dependent
+
 _import_sanity_check()
 
 
-#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def main():
     parser = argparse.ArgumentParser(
         description="Heat V4 - Time-Dependent Optimal Control with Dirichlet + Neumann BC",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     parser = build_parser()
@@ -45,16 +47,21 @@ def main():
 
     # sanity check per box
     if args.sc_type == "box" and args.sc_lower > args.sc_upper:
-        raise ValueError(f"Box constraint invalido: sc_lower={args.sc_lower} > sc_upper={args.sc_upper}")
+        raise ValueError(
+            f"Box constraint invalido: sc_lower={args.sc_lower} > sc_upper={args.sc_upper}"
+        )
 
     import os
+
     print(f"[DEBUG] running file = {os.path.abspath(__file__)}", flush=True)
 
     # Default controls (solo se NON disattivati)
-    if (not args.no_default_controls
+    if (
+        not args.no_default_controls
         and not args.control_boundary_dirichlet
         and not args.control_boundary_neumann
-        and not args.control_distributed):
+        and not args.control_distributed
+    ):
         args.control_boundary_dirichlet = ["yL,0.0,1.0"]
 
     if not args.target_zone:
@@ -67,9 +74,9 @@ def main():
     rank = comm.rank
 
     if rank == 0:
-        print("\n" + "#"*70)
+        print("\n" + "#" * 70)
         print("# HEAT PARABOLIC V4 - TIME-DEPENDENT CONTROL (DIRICHLET + NEUMANN)")
-        print("#"*70)
+        print("#" * 70)
 
     t0 = time.time()
 
@@ -78,7 +85,8 @@ def main():
     elapsed = time.time() - t0
     if rank == 0:
         print(f"\n[TIME] Total: {elapsed:.2f}s")
-        print("#"*70 + "\n")
+        print("#" * 70 + "\n")
+
 
 if __name__ == "__main__":
     main()

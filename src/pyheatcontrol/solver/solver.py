@@ -1,6 +1,7 @@
 # solver.py
 
 import numpy as np
+from mpi4py import MPI
 from petsc4py import PETSc
 import ufl
 from ufl import dx, grad as ufl_grad, inner, TestFunction, TrialFunction
@@ -77,11 +78,11 @@ class TimeDepHeatSolver:
         # Controls count
         self.n_ctrl_dirichlet = len(control_boundary_dirichlet)
         self.n_ctrl_neumann = len(control_boundary_neumann)
-        self.n_ctrl_distributed = len(control_distributed_boxes)
-        self.n_ctrl_scalar = (
-            0  # Dirichlet non è più scalare, è Function(V) come Neumann
-        )
-        self.n_ctrl_spatial = self.n_ctrl_scalar  # compatibilità (se lo usi altrove)
+        self.n_ctrl_boxes = len(control_distributed_boxes)
+
+        self.n_ctrl_distributed = self.n_ctrl_boxes
+
+        self.n_ctrl_spatial = 0
 
         self.control_boundary_dirichlet = control_boundary_dirichlet
         self.control_boundary_neumann = control_boundary_neumann
@@ -108,27 +109,27 @@ class TimeDepHeatSolver:
         self._zero_p.x.array[:] = 0.0
         self._zero_p.x.scatter_forward()
 
-        # per costruire un UNICO facet_tags complessivo (solo per visualizzazione omega_qd)
+        # accumulate facets/values for a single combined meshtags (for visualization)
         all_facets_D = []
         all_values_D = []
 
         for i, seg in enumerate(control_boundary_dirichlet):
-            # dofs + funzione bc (per applicare bc distribuito su ΓD)
+            # DOFs + BC function for applying distributed BC on ΓD
             dofs, bc_f = create_boundary_condition_function(domain, V, [seg], L)
             self.bc_dofs_list_dirichlet.append(dofs)
             self.bc_funcs_dirichlet.append(bc_f)
 
-            # marker per questo segmento
+            # facet marker for this segment
             marker_id = i + 1
             facet_tags_i, _ = create_boundary_facet_tags(domain, [seg], L, marker_id)
 
-            # misura ds “per questo segmento”
+            # ds measure for this segment
             self.dirichlet_marker_ids.append(marker_id)
             self.dirichlet_measures.append(
                 ufl.Measure("ds", domain=domain, subdomain_data=facet_tags_i)
             )
 
-            # accumula facets/values per costruire una meshtags unica
+            # accumulate facets/values for combined meshtags
             all_facets_D.append(facet_tags_i.indices.astype(np.int32))
             all_values_D.append(facet_tags_i.values.astype(np.int32))
 
@@ -138,12 +139,12 @@ class TimeDepHeatSolver:
             facets = np.hstack(all_facets_D).astype(np.int32)
             values = np.hstack(all_values_D).astype(np.int32)
 
-            # ordina per facet id
+            # sort by facet id
             order = np.argsort(facets, kind="mergesort")
             facets = facets[order]
             values = values[order]
 
-            # rimuovi duplicati (se esistono): tieni l’ULTIMO marker per facet
+            # deduplicate: keep the last marker per facet
             # (così se due segmenti si sovrappongono, uno “vince” e non crasha)
             unique_facets, first_idx = np.unique(facets, return_index=True)
             # trick: per tenere lanciato l’ultimo valore, usiamo return_index sul reversed
@@ -179,12 +180,12 @@ class TimeDepHeatSolver:
             facets = np.hstack(all_facets).astype(np.int32)
             values = np.hstack(all_values).astype(np.int32)
 
-            # ordina per facet id
+            # sort by facet id
             order = np.argsort(facets, kind="mergesort")
             facets = facets[order]
             values = values[order]
 
-            # rimuovi duplicati: tieni l’ULTIMO marker per facet
+            # deduplicate: keep the last marker per facet
             unique_facets_rev, first_idx_rev = np.unique(
                 facets[::-1], return_index=True
             )
@@ -225,10 +226,11 @@ class TimeDepHeatSolver:
             dofs_i = self.neumann_dofs[i]  # dofs on this Neumann segment (ΓN_i)
 
             imap = self.V.dofmap.index_map
-            nloc = imap.size_local + imap.num_ghosts
+            nloc = imap.size_local  # owned DOFs only
             all_dofs = np.arange(nloc, dtype=np.int32)
+            dofs_i_owned = dofs_i[dofs_i < nloc].astype(np.int32)
             off_dofs = np.setdiff1d(
-                all_dofs, dofs_i.astype(np.int32), assume_unique=False
+                all_dofs, dofs_i_owned, assume_unique=False
             ).astype(np.int32)
 
             M_i.zeroRowsColumns(off_dofs, diag=1.0)
@@ -251,8 +253,8 @@ class TimeDepHeatSolver:
             q.x.scatter_forward()
             self.q_neumann_funcs.append(q)
 
-        # Subito dopo il loop che crea M_neumann
-        # M_i.norm() is MPI collective - all ranks must call
+        # Debug: matrix norms (norm() is MPI collective)
+        
         if self.n_ctrl_neumann > 0:
             neumann_norms = [M_i.norm() for M_i in self.M_neumann]
             if self.domain.comm.rank == 0:
@@ -269,14 +271,16 @@ class TimeDepHeatSolver:
             uD.x.scatter_forward()
             self.u_dirichlet_funcs.append(uD)
 
-        # Dirichlet DOFs restricted to ΓD (già esistono in bc_dofs_list_dirichlet)
-        self.dirichlet_dofs = self.bc_dofs_list_dirichlet  # Riusa quelli già calcolati!
+        # Dirichlet DOFs restricted to ΓD (reuse from bc_dofs_list_dirichlet)
+        self.dirichlet_dofs = self.bc_dofs_list_dirichlet
 
-        if self.domain.comm.rank == 0 and self.n_ctrl_dirichlet > 0:
+        if self.n_ctrl_dirichlet > 0:
+            comm = self.domain.comm
             for i, dofs in enumerate(self.dirichlet_dofs):
-                logger.debug(
-                    f"Dirichlet control zone {i + 1}: {len(dofs)} DOFs on boundary"
-                )
+                nloc = int(len(dofs))
+                nglob = comm.allreduce(nloc, op=MPI.SUM)
+                if comm.rank == 0:
+                    logger.debug(f"Dirichlet control zone {i+1}: local={nloc}, global={nglob} DOFs on boundary")
 
         # -------------------------------------------------
         # Mass matrices for Dirichlet control gradients (restricted to ΓD)
@@ -314,11 +318,11 @@ class TimeDepHeatSolver:
                 # Make invertible outside ΓD by identity rows/cols
                 dofs_i = self.dirichlet_dofs[i]
                 imap = self.V.dofmap.index_map
-                nloc = imap.size_local  # SOLO owned dofs
+                nloc = imap.size_local  # owned DOFs only
                 all_dofs = np.arange(nloc, dtype=np.int32)
 
                 dofs_i = dofs_i.astype(np.int32)
-                dofs_i_owned = dofs_i[dofs_i < nloc]  # filtra eventuali ghost
+                dofs_i_owned = dofs_i[dofs_i < nloc]  # filter out ghost DOFs
 
                 off_dofs = np.setdiff1d(
                     all_dofs, dofs_i_owned, assume_unique=False
@@ -355,7 +359,7 @@ class TimeDepHeatSolver:
                 chi.interpolate(chi_dg0)
                 self.chi_distributed_V.append(chi)
 
-        # ========== STEP 1: Calcola DOF restriction PRIMA ==========
+        # Compute DOF restriction for each distributed control zone
         self.distributed_dofs = []
         for marker in self.distributed_markers:
             dofs_in_cells = []
@@ -370,7 +374,7 @@ class TimeDepHeatSolver:
                     f"Distributed control zone {len(self.distributed_dofs)}: {len(dofs_unique)} DOFs"
                 )
 
-        # ========== STEP 2: Crea mass matrices DOPO (ora distributed_dofs è pieno) ==========
+        # Build mass matrices (distributed_dofs is now populated)
         self.M_distributed = []
         self.ksp_distributed = []
 
@@ -389,10 +393,11 @@ class TimeDepHeatSolver:
                 dofs_i = self.distributed_dofs[i]  # dofs in this control box
 
                 imap = self.V.dofmap.index_map
-                nloc = imap.size_local + imap.num_ghosts
+                nloc = imap.size_local  # owned DOFs only
                 all_dofs = np.arange(nloc, dtype=np.int32)
+                dofs_i_owned = dofs_i[dofs_i < nloc].astype(np.int32)
                 off_dofs = np.setdiff1d(
-                    all_dofs, dofs_i.astype(np.int32), assume_unique=False
+                    all_dofs, dofs_i_owned, assume_unique=False
                 ).astype(np.int32)
 
                 M_i.zeroRowsColumns(off_dofs, diag=1.0)
@@ -431,7 +436,7 @@ class TimeDepHeatSolver:
         for box in constraint_boxes:
             self.constraint_markers.append(mark_cells_in_boxes(domain, [box], L))
 
-        # unione di tutte le constraint boxes
+        # union of all constraint boxes
         if len(self.constraint_markers) == 0:
             self.sc_marker = np.zeros(
                 functionspace(domain, ("DG", 0)).dofmap.index_map.size_local, dtype=bool
@@ -452,21 +457,17 @@ class TimeDepHeatSolver:
         self.chi_sc = Function(self.V0)
         self.chi_sc.interpolate(chi_sc_dg0)
 
-        # assemble_scalar is MPI collective - all ranks must participate
-        mt = [assemble_scalar(form(chi * dx)) for chi in self.chi_targets]
-        msc = assemble_scalar(form(self.chi_sc * dx))
+        # assemble_scalar returns LOCAL contribution -> must allreduce to get GLOBAL
+        mt_loc = [assemble_scalar(form(chi * dx)) for chi in self.chi_targets]
+        mt = [self.domain.comm.allreduce(v, op=MPI.SUM) for v in mt_loc]
+
+        msc_loc = assemble_scalar(form(self.chi_sc * dx))
+        msc = self.domain.comm.allreduce(msc_loc, op=MPI.SUM)
+
         if self.domain.comm.rank == 0:
             logger.debug(f"Constraint zone: {int(np.sum(self.sc_marker))} cells marked")
             logger.debug(f"meas(targets) = {mt}")
             logger.debug(f"meas(constraint) = {float(msc)}")
-            tgt_union = np.zeros_like(self.sc_marker, dtype=bool)
-            for m in self.target_markers:
-                tgt_union |= m
-            overlap = int(np.sum(tgt_union & self.sc_marker))
-            logger.debug(
-                f"cells(target_union)={int(np.sum(tgt_union))} "
-                f"cells(sc)={int(np.sum(self.sc_marker))} overlap={overlap}"
-            )
 
         # Multipliers are now time-dependent (one per time step)
         # Will be initialized properly when sc_start_time/sc_end_time are known
@@ -484,7 +485,7 @@ class TimeDepHeatSolver:
             ufl_grad(T_trial), ufl_grad(v)
         ) * dx
         self.a_adjoint = self.a_state
-        # Pre-compile forms (evita JIT nel loop temporale)
+        # Pre-compile forms (avoid JIT in the time loop)
         self.a_state_compiled = form(self.a_state)
         self.a_adjoint_compiled = form(self.a_adjoint)
         self.ksp = PETSc.KSP().create(domain.comm)
@@ -511,7 +512,7 @@ class TimeDepHeatSolver:
         self.Y_all = []
         self.P_all = []
 
-        # Pre-allocate gradient containers (evita ri-allocazione in compute_gradient)
+        # Pre-allocate gradient containers
         self.grad_q_neumann_time = None
         self.grad_u_distributed_time = None
         self.grad_u_dirichlet_time = None
@@ -574,13 +575,13 @@ class TimeDepHeatSolver:
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def _init_cost_forms(self, T_cure):
-        """Inizializza form pre-compilate per compute_cost"""
+        """Initialize precompiled forms for compute_cost."""
         dx = ufl.Measure("dx", domain=self.domain)
 
-        # Placeholder per temperatura (verrà aggiornato)
+        # Temperature placeholder (updated in the loop)
         self._T_placeholder = Function(self.V)
 
-        # Tracking forms (una per ogni target zone)
+        # Tracking forms (one per target zone)
         self._tracking_forms = []
         for chi_t in self.chi_targets:
             ufl_form = (
@@ -596,16 +597,16 @@ class TimeDepHeatSolver:
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def _init_control_cost_forms(self):
-        """Precompila le forms per la regolarizzazione dei controlli (partiamo dal distributed L2)."""
+        """Precompile forms for control regularization (L2 + H1 temporal)."""
         dx = ufl.Measure("dx", domain=self.domain)
 
-        # Placeholder distributed (uno per controllo)
+        # Distributed placeholders (one per control zone)
         self._u_dist_L2_ph = [Function(self.V) for _ in range(self.n_ctrl_distributed)]
         for f in self._u_dist_L2_ph:
             f.x.array[:] = 0.0
             f.x.scatter_forward()
 
-        # Forms precompilate: ∫ u^2 * chi dx
+        # Precompiled forms: ∫ u² χ dx
         self._dist_L2_forms = []
         for j in range(self.n_ctrl_distributed):
             chiV = self.chi_distributed_V[j]
@@ -613,7 +614,7 @@ class TimeDepHeatSolver:
 
         self._control_cost_forms_initialized = True
 
-        # Placeholders per H1 temporale (u1 - u0)
+        # H1 temporal placeholders (u1 - u0)
         self._u_dist_H1_ph0 = [Function(self.V) for _ in range(self.n_ctrl_distributed)]
         self._u_dist_H1_ph1 = [Function(self.V) for _ in range(self.n_ctrl_distributed)]
         for f0, f1 in zip(self._u_dist_H1_ph0, self._u_dist_H1_ph1):
@@ -682,7 +683,7 @@ class TimeDepHeatSolver:
         Y_all,
         T_cure,
     ):
-        """Compute cost functional (tracking + L2 space + H1 time)."""
+        """Compute cost functional J = J_track + J_reg_L2 + J_reg_H1."""
 
         if not hasattr(self, "_cost_forms_initialized"):
             self._init_cost_forms(T_cure)
@@ -700,7 +701,7 @@ class TimeDepHeatSolver:
             weight = 0.5 if (step == 0 or step == self.num_steps) else 1.0
             val_step = 0.0
             if abs(self.alpha_track) > 1e-30:
-                # Aggiorna placeholder
+                # Update placeholder
                 self._T_placeholder.x.array[:] = T_current.x.array[:]
                 self._T_placeholder.x.scatter_forward()
 
@@ -780,7 +781,7 @@ class TimeDepHeatSolver:
                     )
 
         # ============================================================
-        # H1 temporal regularization  ⭐ CORRETTA ⭐
+        # H1 temporal regularization
         # J = γ/(2 dt) Σ ||u^{m+1} − u^m||²
         # ============================================================
         J_reg_H1 = 0.0
@@ -824,6 +825,12 @@ class TimeDepHeatSolver:
                     J_reg_H1 += coef * assemble_scalar(self._dir_H1t_forms[j])
 
         # ============================================================
+        # MPI reduction: assemble_scalar returns local contributions only
+        comm = self.domain.comm
+        J_track = comm.allreduce(J_track, op=MPI.SUM)
+        J_reg_L2 = comm.allreduce(J_reg_L2, op=MPI.SUM)
+        J_reg_H1 = comm.allreduce(J_reg_H1, op=MPI.SUM)
+
         J_total = J_track + J_reg_L2 + J_reg_H1
         if self.domain.comm.rank == 0:
             logger.debug(

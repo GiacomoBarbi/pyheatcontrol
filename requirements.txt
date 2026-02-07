@@ -1,4 +1,10 @@
-numpy
-mpi4py
-petsc4py
-ruff
+## Requirements
+
+Recommended installation via conda:
+
+conda create -n fenicsx -c conda-forge python=3.11 fenics-dolfinx mpi4py petsc4py
+conda activate fenicsx
+
+Then install this package:
+
+pip install -e .

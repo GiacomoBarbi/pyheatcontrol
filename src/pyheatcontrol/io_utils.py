@@ -11,8 +11,8 @@ from pyheatcontrol.logging_config import logger
 
 
 def _import_sanity_check():
-    # minimal things we expect io_utils to have available
-    _ = (np, MPI, mesh, Function, VTKFile)  # aggiungi/togli qui se serve
+    # sanity check: verify expected imports are available
+    _ = (np, MPI, mesh, Function, VTKFile)  
 
 
 def save_visualization_output(
@@ -36,16 +36,16 @@ def save_visualization_output(
     comm = domain.comm
     rank = comm.rank
 
-    # --- Spazi output ---
+    # Output function spaces
     V_out = functionspace(domain, ("Lagrange", 1))  # Point Data (P1)
     V0_out = functionspace(domain, ("DG", 0))  # Cell Data (DG0 robusto)
 
-    # --- Lista timesteps da salvare ---
+    # Time steps to save
     timesteps_to_save = list(range(0, num_steps, args.output_freq))
     if num_steps not in timesteps_to_save:
-        timesteps_to_save.append(num_steps)  # salvo stato finale
+        timesteps_to_save.append(num_steps)  # always save final state
 
-    # --- Celle locali (NO ghost) + midpoints locali ---
+    # Local cells (no ghosts) + cell midpoints
     tdim = domain.topology.dim
     fdim = tdim - 1
     imap = domain.topology.index_map(tdim)
@@ -57,7 +57,7 @@ def save_visualization_output(
     )  # (num_cells_local, gdim)
 
     def mark_boxes_DG0(name, boxes):
-        """Mark DG0 cell field =1 inside given boxes using cell midpoints (local-only)."""
+        """Mark DG0 cell field=1 inside given boxes using local cell midpoints."""
         f = Function(V0_out, name=name)
         f.x.array[:] = 0.0
         a = f.x.array[:num_cells_local]
@@ -74,12 +74,12 @@ def save_visualization_output(
         f.x.scatter_forward()
         return f
 
-    # --------- Helper: zona celle adiacenti a facets taggati ----------
+    
     def mark_boundary_cells_DG0(name, facet_tags, marker_ids=None):
         """
-        Crea un campo DG0=1 sulle celle che toccano facets marcati.
+        Create DG0=1 field on cells touching marked facets.
         facet_tags: dolfinx.mesh.MeshTags (fdim)
-        marker_ids: None -> usa TUTTI i facets in facet_tags
+        marker_ids: None -> use ALL facets in facet_tags
                     int o lista -> usa facet_tags.find(id)
         """
         zone = Function(V0_out, name=name)
@@ -90,7 +90,7 @@ def save_visualization_output(
             zone.x.scatter_forward()
             return zone
 
-        # facets selezionati
+        # selected facets
         if marker_ids is None:
             facets = np.array(facet_tags.indices, dtype=np.int32)
         else:
@@ -111,7 +111,7 @@ def save_visualization_output(
             zone.x.scatter_forward()
             return zone
 
-        # connettività facet -> cell
+        # facet -> cell connectivity
         domain.topology.create_connectivity(fdim, tdim)
         f2c = domain.topology.connectivity(fdim, tdim)
 
@@ -124,13 +124,13 @@ def save_visualization_output(
 
         cells = np.unique(np.array(cells, dtype=np.int32))
 
-        # marca solo celle locali (no ghost)
+        # mark local cells only (no ghosts)
         cells_local = cells[cells < num_cells_local]
         a[cells_local] = 1.0
         zone.x.scatter_forward()
         return zone
 
-    # --- Convert box [0,1] -> coordinate fisiche della mesh ---
+    # Convert box [0,1] -> physical mesh coordinates
     X = domain.geometry.x
     xmin, ymin = float(X[:, 0].min()), float(X[:, 1].min())
     xmax, ymax = float(X[:, 0].max()), float(X[:, 1].max())
@@ -148,7 +148,7 @@ def save_visualization_output(
     target_boxes_phys = [box01_to_phys(b) for b in target_boxes]
     control_boxes_phys = [box01_to_phys(b) for b in control_distributed_boxes]
 
-    # --- Zone volumetriche (Cell Data) ---
+    # Volume zones (Cell Data)
     target_zone = mark_boxes_DG0("omega_t", target_boxes_phys)
     control_zone_dist = mark_boxes_DG0("omega_c", control_boxes_phys)
 
@@ -164,7 +164,7 @@ def save_visualization_output(
         a[:] = 0.0
     constraint_zone.x.scatter_forward()
 
-    # --- TRY GET TAGS (adatta questi nomi se nel tuo solver sono diversi) ---
+    # Get facet tags from solver
     neumann_facet_tags = getattr(solver, "neumann_facet_tags", None)
     dirichlet_facet_tags = getattr(solver, "dirichlet_facet_tags", None)
 
@@ -176,7 +176,7 @@ def save_visualization_output(
     if dirichlet_marker_ids is None:
         dirichlet_marker_ids = getattr(solver, "dirichlet_marker_id", None)
 
-    # --- Zone boundary control (Cell Data): fascia di celle adiacenti al bordo controllato ---
+    # Boundary control zones (Cell Data): cells adjacent to controlled boundary
     omega_qn = mark_boundary_cells_DG0(
         "omega_qn", neumann_facet_tags, neumann_marker_ids
     )
@@ -184,7 +184,7 @@ def save_visualization_output(
         "omega_qd", dirichlet_facet_tags, dirichlet_marker_ids
     )
 
-    # --- Debug utile ---
+    
     if rank == 0:
         n_tgt = int(np.round(target_zone.x.array[:num_cells_local].sum()))
         n_ctrl = int(np.round(control_zone_dist.x.array[:num_cells_local].sum()))
@@ -195,35 +195,35 @@ def save_visualization_output(
             f"marked cells: target={n_tgt}, control_dist={n_ctrl}, constraint={n_cons}, omega_qn={n_qn}, omega_qd={n_qd}"
         )
 
-    # --- Funzioni nodali (riusate) ---
+    # Reusable nodal output functions
     y_out = Function(V_out, name="T")
     p_out = Function(V_out, name="Ta")
     uD_out = Function(V_out, name="Q")
     qN_out = Function(V_out, name="q_n")
     uDir_out = Function(V_out, name="q_d")
 
-    # --- Funzioni cella (riusate) ---
+    # Reusable cell output functions
     muL_out = Function(V0_out, name="multiplier_lower")
     muU_out = Function(V0_out, name="multiplier_upper")
     vL_out = Function(V0_out, name="violation_lower")
     vU_out = Function(V0_out, name="violation_upper")
     T_cell = Function(V0_out, name="T_cell_tmp")
 
-    tmp = Function(V)  # P2 riusata per sommare controlli
+    tmp = Function(V)  # P2 scratch for summing controls
 
-    # --- File VTK/PVD (timeline) ---
+    # VTK/PVD output (timeline)
     pvd_path = os.path.join(output_dir, "solution.pvd")
     with VTKFile(comm, pvd_path, "w") as vtk:
         for m in timesteps_to_save:
             t = float(m * solver.dt)
 
-            # --- Stato / Aggiunto (P2 -> P1) ---
+            # State / adjoint (P2 -> P1 for output)
             y_out.interpolate(Y_all[m])
             p_out.interpolate(P_all[m])
             y_out.x.scatter_forward()
             p_out.x.scatter_forward()
 
-            # --- Controlli: hold-last sul tempo finale ---
+            # Controls: hold-last on final step
             idx = min(m, num_steps - 1)
 
             # Distributed
@@ -256,7 +256,7 @@ def save_visualization_output(
                 uDir_out.interpolate(tmp)
             uDir_out.x.scatter_forward()
 
-            # --- Moltiplicatori (DG0) ---
+            # Multipliers (DG0)
             if hasattr(solver, "mu_lower_time") and m < len(solver.mu_lower_time):
                 muL_out.interpolate(solver.mu_lower_time[m])
             else:
@@ -269,7 +269,7 @@ def save_visualization_output(
                 muU_out.x.array[:] = 0.0
             muU_out.x.scatter_forward()
 
-            # --- Violazioni (DG0) ---
+            # Violations (DG0)
             T_cell.interpolate(y_out)
             T_cell.x.scatter_forward()
 
@@ -287,7 +287,7 @@ def save_visualization_output(
             vL_out.x.scatter_forward()
             vU_out.x.scatter_forward()
 
-            # --- Scrittura campi a questo timestep ---
+            # Write fields at this timestep
             vtk.write_function(y_out, t)
             vtk.write_function(p_out, t)
             vtk.write_function(uD_out, t)
@@ -299,7 +299,7 @@ def save_visualization_output(
             vtk.write_function(vL_out, t)
             vtk.write_function(vU_out, t)
 
-            # Zone ad OGNI timestep
+            # Zone markers at each timestep
             vtk.write_function(target_zone, t)
             vtk.write_function(control_zone_dist, t)
             vtk.write_function(constraint_zone, t)

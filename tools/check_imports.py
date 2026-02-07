@@ -9,6 +9,7 @@ SKIP = {
     "__init__",
 }
 
+
 def main():
     py_files = [p for p in ROOT.glob("*.py") if p.is_file()]
     failed = []
@@ -34,6 +35,6 @@ def main():
 
     print("\nAll module imports OK.")
 
+
 if __name__ == "__main__":
     main()
-
