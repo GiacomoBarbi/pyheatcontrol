@@ -11,6 +11,114 @@ from pyheatcontrol.solver import TimeDepHeatSolver
 from pyheatcontrol.gradcheck import check_gradient_fd
 from pyheatcontrol.logging_config import logger
 
+def armijo_line_search(
+    solver,
+    u_distributed_funcs_time,
+    u_neumann_funcs_time,
+    u_dirichlet_funcs_time,
+    grad_distributed,  # solver.grad_u_distributed_time
+    grad_neumann,      # solver.grad_q_neumann_time
+    grad_dirichlet,    # solver.grad_u_dirichlet_time
+    J_current,
+    grad_norm_sq,
+    T_cure,
+    num_steps,
+    alpha_init=10.0,
+    rho=0.5,
+    c=1e-4,
+    max_iter=20,
+    comm=None,
+    rank=0
+):
+    """
+    Backtracking line search with Armijo condition.
+
+    Returns optimal step size alpha.
+    """
+
+    alpha = alpha_init
+
+    # Make backup of current controls
+    u_dist_backup = None
+    u_neum_backup = None
+    u_dir_backup = None
+
+    if solver.n_ctrl_distributed > 0:
+        u_dist_backup = [[u_distributed_funcs_time[m][j].x.array.copy()
+                          for j in range(solver.n_ctrl_distributed)]
+                         for m in range(num_steps)]
+
+    if solver.n_ctrl_neumann > 0:
+        u_neum_backup = [[u_neumann_funcs_time[m][i].x.array.copy()
+                          for i in range(solver.n_ctrl_neumann)]
+                         for m in range(num_steps)]
+
+    if solver.n_ctrl_dirichlet > 0:
+        u_dir_backup = [[u_dirichlet_funcs_time[m][j].x.array.copy()
+                         for j in range(solver.n_ctrl_dirichlet)]
+                        for m in range(num_steps)]
+
+    # Armijo condition threshold
+    armijo_threshold = J_current - c * alpha * grad_norm_sq
+
+    for ls_iter in range(max_iter):
+        # Try step with current alpha
+        # Update distributed
+        if solver.n_ctrl_distributed > 0:
+            for j in range(solver.n_ctrl_distributed):
+                dofs_j = solver.distributed_dofs[j]
+                for m in range(num_steps):
+                    u_distributed_funcs_time[m][j].x.array[dofs_j] = \
+                        u_dist_backup[m][j][dofs_j] - alpha * grad_distributed[m][j].x.array[dofs_j]
+                    u_distributed_funcs_time[m][j].x.scatter_forward()
+
+        # Update Neumann
+        if solver.n_ctrl_neumann > 0:
+            for i in range(solver.n_ctrl_neumann):
+                dofs_i = solver.neumann_dofs[i]
+                for m in range(num_steps):
+                    u_neumann_funcs_time[m][i].x.array[dofs_i] = \
+                        u_neum_backup[m][i][dofs_i] - alpha * grad_neumann[m][i].x.array[dofs_i]
+                    u_neumann_funcs_time[m][i].x.scatter_forward()
+
+        # Update Dirichlet
+        if solver.n_ctrl_dirichlet > 0:
+            for j in range(solver.n_ctrl_dirichlet):
+                dofs_j = solver.dirichlet_dofs[j]
+                for m in range(num_steps):
+                    u_dirichlet_funcs_time[m][j].x.array[dofs_j] = \
+                        u_dir_backup[m][j][dofs_j] - alpha * grad_dirichlet[m][j].x.array[dofs_j]
+                    u_dirichlet_funcs_time[m][j].x.scatter_forward()
+
+        # Evaluate J at trial point
+        Y_trial = solver.solve_forward(
+            u_neumann_funcs_time,
+            u_distributed_funcs_time,
+            u_dirichlet_funcs_time,
+            T_cure
+        )
+        J_trial, _, _, _ = solver.compute_cost(
+            u_distributed_funcs_time,
+            u_neumann_funcs_time,
+            u_dirichlet_funcs_time,
+            Y_trial,
+            T_cure
+        )
+
+        # Check Armijo condition
+        if J_trial <= armijo_threshold:
+            if rank == 0:
+                print(f"    [LS] Found alpha={alpha:.3e} after {ls_iter+1} tries, J={J_trial:.6e}")
+            return alpha
+
+        # Reduce step size
+        alpha *= rho
+        armijo_threshold = J_current - c * alpha * grad_norm_sq
+
+    # Max iterations reached - return last alpha
+    if rank == 0:
+        print(f"    [LS] Max iter reached, using alpha={alpha:.3e}")
+    return alpha
 
 def optimization_time_dependent(args):
     """Time-dependent optimal control with adjoint-based gradient."""
@@ -326,48 +434,48 @@ def optimization_time_dependent(args):
                 u_dirichlet_funcs_time,
             )
 
-            # Update Dirichlet controls on ΓD
-            if solver.n_ctrl_dirichlet > 0:
-                for j in range(solver.n_ctrl_dirichlet):
-                    dofs_j = solver.dirichlet_dofs[j]
-                    for m in range(num_steps):
-                        uD = u_dirichlet_funcs_time[m][j]
-                        gD = solver.grad_u_dirichlet_time[m][j]
-                        
-                        uD.x.array[dofs_j] -= args.lr * gD.x.array[dofs_j]
-                        uD.x.scatter_forward()
-
-            # Update Neumann controls
-            if solver.n_ctrl_neumann > 0:
-                for i in range(solver.n_ctrl_neumann):
-                    dofs_i = solver.neumann_dofs[i]
-                    for m in range(num_steps):
-                        q = u_neumann_funcs_time[m][i]
-                        g = solver.grad_q_neumann_time[m][i]
-                        q.x.array[dofs_i] -= args.lr * g.x.array[dofs_i]
-                        q.x.scatter_forward()
-                if solver.domain.comm.rank == 0:
-                    logger.debug(
-                        f"q(t0) min/max = {u_neumann_funcs_time[0][0].x.array.min()}, {u_neumann_funcs_time[0][0].x.array.max()}"
-                    )
-                    logger.debug(
-                        f"q(tend) min/max = {u_neumann_funcs_time[-1][0].x.array.min()}, {u_neumann_funcs_time[-1][0].x.array.max()}"
-                    )
-
-            # Update distributed controls
-            if solver.n_ctrl_distributed > 0:
-                for j in range(solver.n_ctrl_distributed):
-                    dofs_j = solver.distributed_dofs[j]
-                    for m in range(num_steps):
-                        uD = u_distributed_funcs_time[m][j]
-                        gD = solver.grad_u_distributed_time[m][j]
-                        uD.x.array[dofs_j] -= args.lr * gD.x.array[dofs_j]
-                        uD.x.scatter_forward()
-                if rank == 0:
-                    a0 = u_distributed_funcs_time[0][0].x.array
-                    logger.debug(
-                        f"uD0(t0) min/max = {float(a0.min())}, {float(a0.max())}"
-                    )
+#             # Update Dirichlet controls on ΓD
+#             if solver.n_ctrl_dirichlet > 0:
+#                 for j in range(solver.n_ctrl_dirichlet):
+#                     dofs_j = solver.dirichlet_dofs[j]
+#                     for m in range(num_steps):
+#                         uD = u_dirichlet_funcs_time[m][j]
+#                         gD = solver.grad_u_dirichlet_time[m][j]
+#
+#                         uD.x.array[dofs_j] -= args.lr * gD.x.array[dofs_j]
+#                         uD.x.scatter_forward()
+#
+#             # Update Neumann controls
+#             if solver.n_ctrl_neumann > 0:
+#                 for i in range(solver.n_ctrl_neumann):
+#                     dofs_i = solver.neumann_dofs[i]
+#                     for m in range(num_steps):
+#                         q = u_neumann_funcs_time[m][i]
+#                         g = solver.grad_q_neumann_time[m][i]
+#                         q.x.array[dofs_i] -= args.lr * g.x.array[dofs_i]
+#                         q.x.scatter_forward()
+#                 if solver.domain.comm.rank == 0:
+#                     logger.debug(
+#                         f"q(t0) min/max = {u_neumann_funcs_time[0][0].x.array.min()}, {u_neumann_funcs_time[0][0].x.array.max()}"
+#                     )
+#                     logger.debug(
+#                         f"q(tend) min/max = {u_neumann_funcs_time[-1][0].x.array.min()}, {u_neumann_funcs_time[-1][0].x.array.max()}"
+#                     )
+#
+#             # Update distributed controls
+#             if solver.n_ctrl_distributed > 0:
+#                 for j in range(solver.n_ctrl_distributed):
+#                     dofs_j = solver.distributed_dofs[j]
+#                     for m in range(num_steps):
+#                         uD = u_distributed_funcs_time[m][j]
+#                         gD = solver.grad_u_distributed_time[m][j]
+#                         uD.x.array[dofs_j] -= args.lr * gD.x.array[dofs_j]
+#                         uD.x.scatter_forward()
+#                 if rank == 0:
+#                     a0 = u_distributed_funcs_time[0][0].x.array
+#                     logger.debug(
+#                         f"uD0(t0) min/max = {float(a0.min())}, {float(a0.max())}"
+#                     )
 
             if args.check_grad and sc_iter == 0 and inner_iter == 0:
                 J0, fd, ad, rel = check_gradient_fd(
@@ -395,14 +503,13 @@ def optimization_time_dependent(args):
                 logger.debug(f"u_old = {u_controls.copy()}")
                 logger.debug(f"grad = {grad.copy()}")
 
-            # Gradient norm (includes all Function(P2) controls)
+            # ============================================================
+            # Line search to find optimal step size
+            # ============================================================
+            # First compute gradient norm (needed for Armijo condition)
             grad_sq = 0.0
 
-            # Scalar controls (if any)
-            if grad.size > 0:
-                grad_sq += float(np.sum(grad**2))
-
-            # Dirichlet Function(P2) on ΓD (owned DOFs only)
+            # Dirichlet gradient norm
             if solver.n_ctrl_dirichlet > 0:
                 nloc = V.dofmap.index_map.size_local
                 for j in range(solver.n_ctrl_dirichlet):
@@ -412,7 +519,7 @@ def optimization_time_dependent(args):
                         gD = solver.grad_u_dirichlet_time[m][j]
                         grad_sq += float(np.sum(gD.x.array[dofs_j_owned] ** 2))
 
-            # Neumann Function(P2) on Γ (owned DOFs only)
+            # Neumann gradient norm
             if solver.n_ctrl_neumann > 0:
                 nloc = V.dofmap.index_map.size_local
                 for i in range(solver.n_ctrl_neumann):
@@ -422,7 +529,7 @@ def optimization_time_dependent(args):
                         g = solver.grad_q_neumann_time[m][i]
                         grad_sq += float(np.sum(g.x.array[dofs_i_owned] ** 2))
 
-            # Distributed Function(P2) in Ω (owned DOFs only)
+            # Distributed gradient norm
             if solver.n_ctrl_distributed > 0:
                 nloc = V.dofmap.index_map.size_local
                 for j in range(solver.n_ctrl_distributed):
@@ -434,10 +541,30 @@ def optimization_time_dependent(args):
 
             grad_sq = comm.allreduce(grad_sq, op=MPI.SUM)
             grad_norm = np.sqrt(grad_sq)
-            # ============================================================
-            # Recompute STATE and COST after updating Function controls
-            # (so the printed J matches the updated controls)
-            # ============================================================
+
+            # Armijo line search
+            alpha = armijo_line_search(
+                solver,
+                u_distributed_funcs_time,
+                u_neumann_funcs_time,
+                u_dirichlet_funcs_time,
+                solver.grad_u_distributed_time,
+                solver.grad_q_neumann_time,
+                solver.grad_u_dirichlet_time,
+                J,  # Current objective
+                grad_sq,
+                T_cure,
+                num_steps,
+                alpha_init=args.lr,  # Use args.lr as initial guess
+                rho=0.5,
+                c=1e-4,
+                max_iter=20,
+                comm=comm,
+                rank=rank
+            )
+
+            # Controls are already updated by armijo_line_search
+            # Recompute J for printing (armijo already did final forward)
             Y_all = solver.solve_forward(
                 u_neumann_funcs_time,
                 u_distributed_funcs_time,
@@ -853,3 +980,5 @@ def optimization_time_dependent(args):
             target_boxes,
             ctrl_distributed_boxes,
         )
+
+    return T_final_diag
