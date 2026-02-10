@@ -651,6 +651,9 @@ def optimization_time_dependent(args):
                 sc_start_step,
                 sc_end_step,
             )
+            if rank == 0:
+                logger.info(f"SC OUTER k={sc_iter} feas_inf={feas_inf:.6e} delta_mu={delta_mu:.6e}")
+
         Y_mu = solver.solve_forward(
             u_neumann_funcs_time,
             u_distributed_funcs_time,
