@@ -126,6 +126,9 @@ def optimization_time_dependent(args):
     comm = MPI.COMM_WORLD
     rank = comm.rank
 
+    import time
+    t0 = time.perf_counter()
+
     if rank == 0:
         logger.info("\n" + "=" * 70)
         logger.info("TIME-DEPENDENT OPTIMAL CONTROL (Segregated Approach)")
@@ -984,4 +987,36 @@ def optimization_time_dependent(args):
             ctrl_distributed_boxes,
         )
 
-    return T_final_diag
+    # =======================
+    # Metrics for test scripts
+    # =======================
+    runtime = time.perf_counter() - t0
+
+    energy = J_reg_L2_final + J_reg_H1_final
+
+    # max violation on curing window
+    violation = 0.0
+    if has_constraints:
+        for m in range(sc_start_step, sc_end_step + 1):
+            # interpolate nodal T to DG0 (cellwise) to match sc_marker
+            Vc = functionspace(domain, ("DG", 0))
+            Tcell = Function(Vc)
+            Tcell.interpolate(Y_final_all[m])
+
+            a_loc = Tcell.x.array
+            mask = solver.sc_marker.astype(bool)
+            if a_loc.size > 0 and mask.size > 0 and mask.any():
+                # deficit = max(0, T_cure - T)
+                viol_m = float((T_cure - a_loc[:mask.size][mask]).max())
+                if viol_m < 0.0:
+                    viol_m = 0.0
+                violation = max(violation, viol_m)
+
+    metrics = {
+        "J": float(J_final),
+        "energy": float(energy),
+        "violation": float(violation),
+        "runtime": float(runtime),
+    }
+
+    return T_final_diag, metrics
