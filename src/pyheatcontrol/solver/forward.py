@@ -23,7 +23,7 @@ def _global_minmax(comm, arr):
 
 
 def solve_forward_impl(
-    self, q_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure
+    self, q_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time
 ):
     T_old = Function(self.V)
     v = TestFunction(self.V)
@@ -165,8 +165,6 @@ def solve_forward_impl(
                         f"step={step}, q_func min/max (on Γ) = "
                         f"{gbmin:.6e}, {gbmax:.6e}"
                     )
-
-
         
         if step == 0 and self.n_ctrl_neumann > 0:
             comm = self.domain.comm
@@ -208,7 +206,6 @@ def solve_forward_impl(
                     f"| q_global min/max = {qmin:.6e}, {qmax:.6e}"
                 )
                 logger.debug(f"int_Gamma q ds = {float(q_int):.6e}")
-
 
         # -------------------------
         # RHS (placeholders update + assemble precompiled form)
@@ -263,7 +260,6 @@ def solve_forward_impl(
                 gmin, gmax, _ = _global_minmax(comm, vals)
                 if comm.rank == 0:
                     logger.debug(f"T_final on ΓD min/max: {gmin:.12e} {gmax:.12e}")
-
 
         T.x.petsc_vec.copy(T_old.x.petsc_vec)
         T_old.x.scatter_forward()

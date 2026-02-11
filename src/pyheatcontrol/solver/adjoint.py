@@ -6,7 +6,7 @@ from dolfinx.fem import form, Function, Constant, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
 
-def solve_adjoint_impl(self, Y_all, T_cure):
+def solve_adjoint_impl(self, Y_all, T_ref):
     """Backward solve for adjoint equation (tracking + state constraint), trapezoidal in time."""
     v = TestFunction(self.V)
     dx = ufl.Measure("dx", domain=self.domain)
@@ -48,12 +48,12 @@ def solve_adjoint_impl(self, Y_all, T_cure):
         if abs(self.alpha_track) > 1e-30:
             for chi_t in self.chi_targets:
                 tracking += (
-                    self.alpha_track * w * self.dt * (y_ph - T_cure) * chi_t * v * dx
+                    self.alpha_track * w * self.dt * (y_ph - T_ref) * chi_t * v * dx
                 )
 
         # state-constraint forcing
-        tracking += (-w) * muL_ph * self.chi_sc * v * dx
-        tracking += (+w) * muU_ph * self.chi_sc * v * dx
+        tracking += (-w) * muL_ph * self.chi_sc_cell * v * dx
+        tracking += (+w) * muU_ph * self.chi_sc_cell * v * dx
 
         return (self.rho_c / dt_const) * p_next * v * dx + tracking
 
@@ -78,32 +78,6 @@ def solve_adjoint_impl(self, Y_all, T_cure):
 
         # Select correct precompiled form (trapezoidal weight)
         L_form = L_adj_form_w05 if (m == 0 or m == self.num_steps) else L_adj_form_w1
-
-        # trapezoidal weight
-        weight = 0.5 if (m == 0 or m == self.num_steps) else 1.0
-
-        # Tracking forcing (only if alpha_track != 0)
-        tracking_form = 0
-        if abs(self.alpha_track) > 1e-30:
-            for chi_t in self.chi_targets:
-                tracking_form += (
-                    self.alpha_track
-                    * weight
-                    * self.dt
-                    * (y_current - T_cure)
-                    * chi_t
-                    * v
-                    * dx
-                )
-
-        # -------------------------
-        # State-constraint forcing (keep in DG0)
-        # -------------------------
-        muL_m = self.mu_lower_time[m]  # DG0 function
-        muU_m = self.mu_upper_time[m]  # DG0 function
-
-        tracking_form += (-weight) * muL_m * self.chi_sc * v * dx
-        tracking_form += (+weight) * muU_m * self.chi_sc * v * dx
 
         # Assemble adjoint RHS (allocate on first iteration, reuse thereafter)
         if m == self.num_steps:

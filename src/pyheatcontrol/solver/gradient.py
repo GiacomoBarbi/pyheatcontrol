@@ -2,7 +2,7 @@ import numpy as np
 from mpi4py import MPI
 from petsc4py import PETSc
 import ufl
-from ufl import dx, grad as ufl_grad, inner, TestFunction, FacetNormal
+from ufl import grad as ufl_grad, inner, TestFunction, FacetNormal
 
 from dolfinx.fem import form, Function, functionspace
 from dolfinx.fem.petsc import assemble_vector
@@ -197,35 +197,39 @@ def compute_gradient_impl(
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
 
+                b_reg_H1 = None
                 formH1 = self._grad_dirichlet_regH1_forms[i]
                 if formH1 is not None:
                     b_reg_H1 = assemble_vector(formH1)
-                    b_reg_H1.ghostUpdate(
-                        addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
-                    )
+                    b_reg_H1.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
                     b_total.axpy(1.0, b_reg_H1)
 
                 # .norm() is MPI collective - all ranks must call
-                h1_norm = b_reg_H1.norm()
-                l2_norm = b_reg_L2.norm() if self.alpha_u > 1e-16 else 0.0
-                if self.domain.comm.rank == 0 and m == 0:
-                    logger.debug(
-                        f"H1: m={m}, i={i}: ||b_L2||={l2_norm:.3e}, ||b_H1||={h1_norm:.3e}, ratio={h1_norm / max(l2_norm, 1e-16):.3e}"
-                    )
+                if b_reg_H1 is not None:
+                    h1_norm = b_reg_H1.norm()   # MPI collective
+                    if self.alpha_u > 1e-16:
+                        l2_norm = b_reg_L2.norm()
+                    else:
+                        l2_norm = 0.0
+                    if self.domain.comm.rank == 0 and m == 0:
+                        logger.debug(
+                            f"H1: m={m}, i={i}: ||b_L2||={l2_norm:.3e}, ||b_H1||={h1_norm:.3e}, "
+                            f"ratio={h1_norm / max(l2_norm, 1e-16):.3e}"
+                        )
 
             # Solve Riesz map: M_dirichlet * gD = b_total
             gD = self.grad_u_dirichlet_time[m][i]
             gD.x.petsc_vec.set(0.0)
             # Ensure RHS is supported only on ΓD DOFs
             imap = self.V.dofmap.index_map
-            nloc = imap.size_local + imap.num_ghosts
+            nloc = imap.size_local
             all_dofs = np.arange(nloc, dtype=np.int32)
-            off_dofs = np.setdiff1d(
-                all_dofs, dofs_i.astype(np.int32), assume_unique=False
-            ).astype(np.int32)
+            dofs_i_owned = dofs_i[dofs_i < nloc].astype(np.int32)
+            off_dofs = np.setdiff1d(all_dofs, dofs_i_owned, assume_unique=False).astype(np.int32)
 
             # Zero outside ΓD
-            b_total.setValues(off_dofs, np.zeros(len(off_dofs), dtype=PETSc.ScalarType))
+            # b_total.setValues(off_dofs, np.zeros(len(off_dofs)))
+            b_total.setValues(off_dofs, np.zeros(len(off_dofs)))
             b_total.assemble()
 
             self.ksp_dirichlet[i].solve(b_total, gD.x.petsc_vec)
@@ -314,6 +318,16 @@ def compute_gradient_impl(
             # Solve Riesz map: M_neumann * gq = b_total
             gq = self.grad_q_neumann_time[m][i]
             gq.x.petsc_vec.set(0.0)
+            # Zero RHS outside Γ (important, like Dirichlet)
+            imap = self.V.dofmap.index_map
+            nloc = imap.size_local  # SOLO owned (non ghosts)
+            all_dofs = np.arange(nloc, dtype=np.int32)
+
+            dofs_i_owned = dofs_i[dofs_i < nloc].astype(np.int32)
+            off_dofs = np.setdiff1d(all_dofs, dofs_i_owned, assume_unique=False).astype(np.int32)
+
+            b_total.setValues(off_dofs, np.zeros(len(off_dofs)))
+            b_total.assemble()
             self.ksp_neumann[i].solve(b_total, gq.x.petsc_vec)
             gq.x.scatter_forward()
 
@@ -331,7 +345,6 @@ def compute_gradient_impl(
 
                 if self.domain.comm.rank == 0:
                     logger.debug(f"GRAD-NEUMANN m={m} on Γ min/max: {gmin:.6e}, {gmax:.6e}")
-
 
             idx += 1
 
@@ -364,6 +377,18 @@ def compute_gradient_impl(
             # Solve Riesz map
             gD = self.grad_u_distributed_time[m][i]
             gD.x.petsc_vec.set(0.0)
+            # Zero RHS outside Ωc DOFs (recommended)
+            dofs_i = self.distributed_dofs[i]
+
+            imap = self.V.dofmap.index_map
+            nloc = imap.size_local  # owned
+            all_dofs = np.arange(nloc, dtype=np.int32)
+
+            dofs_i_owned = dofs_i[dofs_i < nloc].astype(np.int32)
+            off_dofs = np.setdiff1d(all_dofs, dofs_i_owned, assume_unique=False).astype(np.int32)
+
+            b_total.setValues(off_dofs, np.zeros(len(off_dofs)))
+            b_total.assemble()
             self.ksp_distributed[i].solve(b_total, gD.x.petsc_vec)
             gD.x.scatter_forward()
 
@@ -374,6 +399,9 @@ def compute_gradient_impl(
     # ============================================================
     # H1 temporal regularization for spatial controls
     # ============================================================
+    v = TestFunction(self.V)
+    dx = ufl.Measure("dx", domain=self.domain)
+
     if self.gamma_u > 1e-16 and self.num_steps >= 2:
         temp = Function(self.V)
 
@@ -388,7 +416,7 @@ def compute_gradient_impl(
                     u_prev = u_distributed_funcs_time[m - 1][i]
                     u_next = u_distributed_funcs_time[m + 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     chiV = self.chi_distributed_V[i]
                     b_h1t = assemble_vector(
                         form(
@@ -415,7 +443,7 @@ def compute_gradient_impl(
                 elif m == 0:
                     u_next = u_distributed_funcs_time[m + 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     chiV = self.chi_distributed_V[i]
                     b_h1t = assemble_vector(
                         form(
@@ -437,7 +465,7 @@ def compute_gradient_impl(
                 else:  # m == self.num_steps - 1
                     u_prev = u_distributed_funcs_time[m - 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     chiV = self.chi_distributed_V[i]
                     b_h1t = assemble_vector(
                         form(
@@ -466,7 +494,7 @@ def compute_gradient_impl(
                     q_prev = q_neumann_funcs_time[m - 1][i]
                     q_next = q_neumann_funcs_time[m + 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     mid = self.neumann_marker_ids[i]
                     b_h1t = assemble_vector(
                         form(
@@ -491,7 +519,7 @@ def compute_gradient_impl(
                 elif m == 0:
                     q_next = q_neumann_funcs_time[m + 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     mid = self.neumann_marker_ids[i]
                     b_h1t = assemble_vector(
                         form(
@@ -516,7 +544,7 @@ def compute_gradient_impl(
                 else:
                     q_prev = q_neumann_funcs_time[m - 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     mid = self.neumann_marker_ids[i]
                     b_h1t = assemble_vector(
                         form(
@@ -548,7 +576,7 @@ def compute_gradient_impl(
                     uD_prev = u_dirichlet_funcs_time[m - 1][i]
                     uD_next = u_dirichlet_funcs_time[m + 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     ds_i = self.dirichlet_measures[i]
                     mid = self.dirichlet_marker_ids[i]
                     b_h1t = assemble_vector(
@@ -574,7 +602,7 @@ def compute_gradient_impl(
                 elif m == 0:
                     uD_next = u_dirichlet_funcs_time[m + 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     ds_i = self.dirichlet_measures[i]
                     mid = self.dirichlet_marker_ids[i]
                     b_h1t = assemble_vector(
@@ -600,7 +628,7 @@ def compute_gradient_impl(
                 else:
                     uD_prev = u_dirichlet_funcs_time[m - 1][i]
 
-                    v = TestFunction(self.V)
+                    # v = TestFunction(self.V)
                     ds_i = self.dirichlet_measures[i]
                     mid = self.dirichlet_marker_ids[i]
                     b_h1t = assemble_vector(

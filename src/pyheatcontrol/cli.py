@@ -20,7 +20,7 @@ def build_parser():
     parser.add_argument("--rho", type=float, default=1100.0)
     parser.add_argument("--c", type=float, default=1500.0)
     parser.add_argument("--T-ambient", type=float, default=25.0)
-    parser.add_argument("--T-cure", type=float, default=160.0)
+    parser.add_argument("--T-ref", type=float, default=160.0)
 
     # Control zones
     parser.add_argument("--control-boundary-dirichlet", action="append", default=[])

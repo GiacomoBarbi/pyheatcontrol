@@ -523,19 +523,17 @@ class TimeDepHeatSolver:
         q_neumann_funcs_time,
         u_distributed_funcs_time,
         u_dirichlet_funcs_time,
-        T_cure,
     ):
         return solve_forward_impl(
             self,
             q_neumann_funcs_time,
             u_distributed_funcs_time,
             u_dirichlet_funcs_time,
-            T_cure,
         )
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def solve_adjoint(self, Y_all, T_cure):
-        return solve_adjoint_impl(self, Y_all, T_cure)
+    def solve_adjoint(self, Y_all, T_ref):
+        return solve_adjoint_impl(self, Y_all, T_ref)
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def _init_gradient_forms(self):
@@ -574,7 +572,7 @@ class TimeDepHeatSolver:
         )
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def _init_cost_forms(self, T_cure):
+    def _init_cost_forms(self, T_ref):
         """Initialize precompiled forms for compute_cost."""
         dx = ufl.Measure("dx", domain=self.domain)
 
@@ -587,7 +585,7 @@ class TimeDepHeatSolver:
             ufl_form = (
                 0.5
                 * self.alpha_track
-                * (self._T_placeholder - T_cure) ** 2
+                * (self._T_placeholder - T_ref) ** 2
                 * chi_t
                 * dx
             )
@@ -681,12 +679,12 @@ class TimeDepHeatSolver:
         u_neumann_funcs_time,
         u_dirichlet_funcs_time,
         Y_all,
-        T_cure,
+        T_ref,
     ):
         """Compute cost functional J = J_track + J_reg_L2 + J_reg_H1."""
 
         if not hasattr(self, "_cost_forms_initialized"):
-            self._init_cost_forms(T_cure)
+            self._init_cost_forms(T_ref)
         if not hasattr(self, "_control_cost_forms_initialized"):
             self._init_control_cost_forms()
 

@@ -21,7 +21,7 @@ def armijo_line_search(
     grad_dirichlet,    # solver.grad_u_dirichlet_time
     J_current,
     grad_norm_sq,
-    T_cure,
+    T_ref,
     num_steps,
     alpha_init=10.0,
     rho=0.5,
@@ -94,15 +94,14 @@ def armijo_line_search(
         Y_trial = solver.solve_forward(
             u_neumann_funcs_time,
             u_distributed_funcs_time,
-            u_dirichlet_funcs_time,
-            T_cure
+            u_dirichlet_funcs_time
         )
         J_trial, _, _, _ = solver.compute_cost(
             u_distributed_funcs_time,
             u_neumann_funcs_time,
             u_dirichlet_funcs_time,
             Y_trial,
-            T_cure
+            T_ref
         )
 
         # Check Armijo condition
@@ -144,13 +143,13 @@ def optimization_time_dependent(args):
     rho = args.rho
     c = args.c
     T_ambient = args.T_ambient
-    T_cure = args.T_cure
+    T_ref = args.T_ref
 
     if rank == 0:
         logger.info(f"Domain: {L * 100:.1f}cm x {L * 100:.1f}cm")
         logger.info(f"Time: {T_final_time}s, dt={dt}s, steps={num_steps}, Nt={Nt}")
         logger.info(f"Physical: k={k_val}, rho={rho}, c={c}")
-        logger.info(f"T_ambient={T_ambient}°C, T_cure={T_cure}°C")
+        logger.info(f"T_ambient={T_ambient}°C, T_ref={T_ref}°C")
 
     # Parse zones
     ctrl_dirichlet = [
@@ -410,24 +409,27 @@ def optimization_time_dependent(args):
     u_controls = np.zeros((0, num_steps), dtype=float)
     sc_iter = -1
 
+    outer_maxit = args.sc_maxit if has_constraints else 1
+    delta_mu, feas_inf = float("inf"), float("inf")
+
     # Moreau-Yosida loop
-    for sc_iter in range(args.sc_maxit):
+    for sc_iter in range(outer_maxit):
+
         # Inner gradient descent loop
         for inner_iter in range(args.inner_maxit):
             Y_all = solver.solve_forward(
                 u_neumann_funcs_time,
                 u_distributed_funcs_time,
                 u_dirichlet_funcs_time,
-                T_cure,
             )
             J, J_track, J_reg_L2, J_reg_H1 = solver.compute_cost(
                 u_distributed_funcs_time,
                 u_neumann_funcs_time,
                 u_dirichlet_funcs_time,
                 Y_all,
-                T_cure,
+                T_ref,
             )
-            P_all = solver.solve_adjoint(Y_all, T_cure)
+            P_all = solver.solve_adjoint(Y_all, T_ref)
             grad = solver.compute_gradient(
                 u_controls,
                 Y_all,
@@ -487,7 +489,7 @@ def optimization_time_dependent(args):
                     u_distributed_funcs_time,
                     u_neumann_funcs_time,
                     u_dirichlet_funcs_time,
-                    T_cure,
+                    T_ref,
                     eps=args.fd_eps,
                     seed=1,
                     m0=0,
@@ -556,7 +558,7 @@ def optimization_time_dependent(args):
                 solver.grad_u_dirichlet_time,
                 J,  # Current objective
                 grad_sq,
-                T_cure,
+                T_ref,
                 num_steps,
                 alpha_init=args.lr,  # Use args.lr as initial guess
                 rho=0.5,
@@ -572,14 +574,13 @@ def optimization_time_dependent(args):
                 u_neumann_funcs_time,
                 u_distributed_funcs_time,
                 u_dirichlet_funcs_time,
-                T_cure,
             )
             J, J_track, J_reg_L2, J_reg_H1 = solver.compute_cost(
                 u_distributed_funcs_time,
                 u_neumann_funcs_time,
                 u_dirichlet_funcs_time,
                 Y_all,
-                T_cure,
+                T_ref,
             )
 
             if solver.n_ctrl_dirichlet > 0:
@@ -661,14 +662,13 @@ def optimization_time_dependent(args):
             u_neumann_funcs_time,
             u_distributed_funcs_time,
             u_dirichlet_funcs_time,
-            T_cure,
         )
         J_mu, Jt_mu, JL2_mu, JH1_mu = solver.compute_cost(
             u_distributed_funcs_time,
             u_neumann_funcs_time,
             u_dirichlet_funcs_time,
             Y_mu,
-            T_cure,
+            T_ref,
         )
 
         if rank == 0:
@@ -692,10 +692,14 @@ def optimization_time_dependent(args):
             else:
                 logger.debug("u_mean=n/a, u_std=n/a (no scalar controls)")
 
+        if not has_constraints:
+            break
+
         if feas_inf < args.sc_tol and delta_mu < 1e-4:
             if rank == 0:
                 print(f"[CONVERGED] feas_inf < {args.sc_tol}\n")
             break
+
 
     if rank == 0:
         if has_constraints:
@@ -706,14 +710,14 @@ def optimization_time_dependent(args):
             logger.debug("CHECK-MU-FINAL no constraints -> skipping mu check")
     # Final results
     Y_final_all = solver.solve_forward(
-        u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time, T_cure
+        u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time
     )
     J_final, J_track_final, J_reg_L2_final, J_reg_H1_final = solver.compute_cost(
         u_distributed_funcs_time,
         u_neumann_funcs_time,
         u_dirichlet_funcs_time,
         Y_final_all,
-        T_cure,
+        T_ref,
     )
     n_ctrl_total = (
         solver.n_ctrl_dirichlet + solver.n_ctrl_neumann + solver.n_ctrl_distributed
@@ -954,11 +958,38 @@ def optimization_time_dependent(args):
                 T_mean = zone_integral / chi_integral
                 print(f"\n  Target zone {i + 1}:")
                 print(f"    T_mean ≈ {T_mean:.6f}°C")
-                deficit = T_cure - T_mean
-                if deficit <= 0:
-                    print("    [OK] Constraint satisfied ✓")
-                else:
-                    print(f"    [INFO] Deficit ≈ {deficit:.1f}°C")
+                # === constraint deficit (diagnostic) using sc_lower/sc_upper ===
+                if has_constraints:
+                    if args.sc_type == "lower":
+                        threshold = args.sc_lower
+                        deficit = threshold - T_mean
+                        if deficit <= 0:
+                            print("    [OK] Lower constraint satisfied ✓")
+                        else:
+                            print(f"    [INFO] Lower deficit ≈ {deficit:.1f}°C")
+
+                    elif args.sc_type == "upper":
+                        threshold = args.sc_upper
+                        excess = T_mean - threshold
+                        if excess <= 0:
+                            print("    [OK] Upper constraint satisfied ✓")
+                        else:
+                            print(f"    [INFO] Upper excess ≈ {excess:.1f}°C")
+
+                    else:  # "box"
+                        low = args.sc_lower
+                        up = args.sc_upper
+                        deficit_low = low - T_mean
+                        excess_up = T_mean - up
+                        viol = max(deficit_low, excess_up, 0.0)
+                        if viol <= 0:
+                            print("    [OK] Box constraint satisfied ✓")
+                        else:
+                            if deficit_low > 0:
+                                print(f"    [INFO] Box violation (below) ≈ {deficit_low:.1f}°C")
+                            else:
+                                print(f"    [INFO] Box violation (above) ≈ {excess_up:.1f}°C")
+
             else:
                 print(f"\n  Target zone {i + 1}: Empty or zero measure")
 
@@ -970,7 +1001,7 @@ def optimization_time_dependent(args):
         logger.info("SAVING VISUALIZATION OUTPUT")
         logger.info("=" * 70 + "\n")
 
-    P_final_all = solver.solve_adjoint(Y_final_all, T_cure)
+    P_final_all = solver.solve_adjoint(Y_final_all, T_ref)
     if not args.no_vtk:
         save_visualization_output(
             solver,
@@ -1006,11 +1037,29 @@ def optimization_time_dependent(args):
             a_loc = Tcell.x.array
             mask = solver.sc_marker.astype(bool)
             if a_loc.size > 0 and mask.size > 0 and mask.any():
-                # deficit = max(0, T_cure - T)
-                viol_m = float((T_cure - a_loc[:mask.size][mask]).max())
-                if viol_m < 0.0:
-                    viol_m = 0.0
+                a_sc = a_loc[:mask.size][mask]  # temperatures on constrained cells
+
+                if args.sc_type == "lower":
+                    viol_m = float((args.sc_lower - a_sc).max())
+                    if viol_m < 0.0:
+                        viol_m = 0.0
+
+                elif args.sc_type == "upper":
+                    viol_m = float((a_sc - args.sc_upper).max())
+                    if viol_m < 0.0:
+                        viol_m = 0.0
+
+                else:  # "box"
+                    violL = float((args.sc_lower - a_sc).max())
+                    if violL < 0.0:
+                        violL = 0.0
+                    violU = float((a_sc - args.sc_upper).max())
+                    if violU < 0.0:
+                        violU = 0.0
+                    viol_m = max(violL, violU)
+
                 violation = max(violation, viol_m)
+
 
     metrics = {
         "J": float(J_final),
