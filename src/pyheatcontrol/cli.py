@@ -9,6 +9,7 @@ def build_parser():
 
     # Domain
     parser.add_argument("--L", type=float, default=0.1)
+    parser.add_argument("--H", type=float, default=None)
     parser.add_argument("--n", type=int, default=3)
 
     # Time
@@ -21,11 +22,16 @@ def build_parser():
     parser.add_argument("--c", type=float, default=1500.0)
     parser.add_argument("--T-ambient", type=float, default=25.0)
     parser.add_argument("--T-ref", type=float, default=160.0)
+    parser.add_argument("--T-ref-func", type=str, default=None)
+    parser.add_argument("--T-ref-func-xt", type=str, default=None)
 
     # Control zones
     parser.add_argument("--control-boundary-dirichlet", action="append", default=[])
     parser.add_argument("--control-boundary-neumann", action="append", default=[])
     parser.add_argument("--control-distributed", action="append", default=[])
+    parser.add_argument("--dirichlet-bc", action="append", default=[])
+    parser.add_argument("--dirichlet-disturbance", action="append", default=[])
+    parser.add_argument("--robin-boundary", action="append", default=[])
     parser.add_argument("--no-default-controls", action="store_true")
 
     # Target zones

@@ -1,7 +1,7 @@
 from petsc4py import PETSc
 import ufl
 from ufl import TestFunction
-
+import numpy as np
 from dolfinx.fem import form, Function, Constant, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
@@ -19,6 +19,12 @@ def solve_adjoint_impl(self, Y_all, T_ref):
     bc_list_adj = [
         dirichletbc(self._zero_p, dofs) for dofs in self.bc_dofs_list_dirichlet
     ]
+    # Add fixed Dirichlet BCs (p=0 on Γ where y is prescribed)
+    for dofs in self.dirichlet_bc_dofs:
+        bc_list_adj.append(dirichletbc(self._zero_p, dofs))
+    # Add Dirichlet disturbance BCs (p=0 on Γ where d(t) is prescribed)
+    for dofs in self.dirichlet_dist_dofs:
+        bc_list_adj.append(dirichletbc(self._zero_p, dofs))
 
     # Assemble adjoint matrix once
     A_adj = assemble_matrix(self.a_adjoint_compiled, bcs=bc_list_adj)
@@ -39,6 +45,9 @@ def solve_adjoint_impl(self, Y_all, T_ref):
     y_ph = Function(self.V)  # placeholder for Y_all[m]
     muL_ph = Function(self.Vc)  # DG0
     muU_ph = Function(self.Vc)  # DG0
+    T_ref_ph = Function(self.V)  # placeholder for T_ref (can vary in space and time)
+    T_ref_ph.x.array[:] = T_ref if isinstance(T_ref, (int, float)) else 0.0
+    T_ref_ph.x.scatter_forward()
 
     # Build RHS UFL with trapezoidal weights: 1.0 (interior), 0.5 (endpoints)
     def build_L_adj_ufl(weight_value: float):
@@ -48,7 +57,7 @@ def solve_adjoint_impl(self, Y_all, T_ref):
         if abs(self.alpha_track) > 1e-30:
             for chi_t in self.chi_targets:
                 tracking += (
-                    self.alpha_track * w * self.dt * (y_ph - T_ref) * chi_t * v * dx
+                    self.alpha_track * w * self.dt * (y_ph - T_ref_ph) * chi_t * v * dx
                 )
 
         # state-constraint forcing
@@ -69,6 +78,14 @@ def solve_adjoint_impl(self, Y_all, T_ref):
         # Update placeholders
         y_current.x.petsc_vec.copy(y_ph.x.petsc_vec)
         y_ph.x.scatter_forward()
+        # Update T_ref placeholder for this time step
+        if hasattr(self, 'T_ref_values'):
+            T_ref_step = self.T_ref_values[m]
+            if isinstance(T_ref_step, (int, float, np.floating)):
+                T_ref_ph.x.array[:] = T_ref_step
+            else:
+                T_ref_ph.x.array[:] = T_ref_step.x.array[:]
+            T_ref_ph.x.scatter_forward()
 
         self.mu_lower_time[m].x.petsc_vec.copy(muL_ph.x.petsc_vec)
         muL_ph.x.scatter_forward()

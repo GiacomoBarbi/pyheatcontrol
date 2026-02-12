@@ -46,6 +46,10 @@ class TimeDepHeatSolver:
         target_boxes,
         constraint_boxes,
         L,
+        H,
+        robin_segments,
+        dirichlet_bcs,
+        dirichlet_disturbances,
         alpha_track,
         alpha_u,
         gamma_u,
@@ -62,6 +66,11 @@ class TimeDepHeatSolver:
         self.Nt = num_steps + 1
         self.T_ambient = T_ambient
         self.L = L
+        self.H = H
+
+        self.robin_segments = robin_segments
+        self.dirichlet_bcs = dirichlet_bcs
+        self.dirichlet_disturbances = dirichlet_disturbances
 
         # Physical parameters
         self.k_therm = Constant(domain, PETSc.ScalarType(k_val))
@@ -115,13 +124,13 @@ class TimeDepHeatSolver:
 
         for i, seg in enumerate(control_boundary_dirichlet):
             # DOFs + BC function for applying distributed BC on ΓD
-            dofs, bc_f = create_boundary_condition_function(domain, V, [seg], L)
+            dofs, bc_f = create_boundary_condition_function(domain, V, [seg], L, H)
             self.bc_dofs_list_dirichlet.append(dofs)
             self.bc_funcs_dirichlet.append(bc_f)
 
             # facet marker for this segment
             marker_id = i + 1
-            facet_tags_i, _ = create_boundary_facet_tags(domain, [seg], L, marker_id)
+            facet_tags_i, _ = create_boundary_facet_tags(domain, [seg], L, H, marker_id)
 
             # ds measure for this segment
             self.dirichlet_marker_ids.append(marker_id)
@@ -171,7 +180,7 @@ class TimeDepHeatSolver:
 
         for i, seg in enumerate(control_boundary_neumann):
             marker_id = i + 1
-            facet_tags_i, _ = create_boundary_facet_tags(domain, [seg], L, marker_id)
+            facet_tags_i, _ = create_boundary_facet_tags(domain, [seg], L, H, marker_id)
             self.neumann_marker_ids.append(marker_id)
             all_facets.append(facet_tags_i.indices)
             all_values.append(facet_tags_i.values)
@@ -203,7 +212,7 @@ class TimeDepHeatSolver:
         # Neumann DOFs restricted to Γ
         self.neumann_dofs = []
         for seg in control_boundary_neumann:
-            dofs, _ = create_boundary_condition_function(domain, V, [seg], L)
+            dofs, _ = create_boundary_condition_function(domain, V, [seg], L, H)
             self.neumann_dofs.append(dofs)
         # -------------------------------------------------
         # Riesz maps for Neumann gradients (CORRECT PLACE)
@@ -344,7 +353,7 @@ class TimeDepHeatSolver:
         # -------------------------
         self.distributed_markers = []
         for box in control_distributed_boxes:
-            self.distributed_markers.append(mark_cells_in_boxes(domain, [box], L))
+            self.distributed_markers.append(mark_cells_in_boxes(domain, [box], L, self.H))
 
         self.chi_distributed_V = []
         if self.n_ctrl_distributed > 0:
@@ -416,7 +425,7 @@ class TimeDepHeatSolver:
         # -------------------------
         self.target_markers = []
         for box in target_boxes:
-            self.target_markers.append(mark_cells_in_boxes(domain, [box], L))
+            self.target_markers.append(mark_cells_in_boxes(domain, [box], L, self.H))
 
         self.chi_targets = []
         for marker in self.target_markers:
@@ -434,7 +443,7 @@ class TimeDepHeatSolver:
         # -------------------------
         self.constraint_markers = []
         for box in constraint_boxes:
-            self.constraint_markers.append(mark_cells_in_boxes(domain, [box], L))
+            self.constraint_markers.append(mark_cells_in_boxes(domain, [box], L, self.H))
 
         # union of all constraint boxes
         if len(self.constraint_markers) == 0:
@@ -481,9 +490,83 @@ class TimeDepHeatSolver:
         T_trial = TrialFunction(V)
         dt_c = Constant(domain, PETSc.ScalarType(dt))
 
+        # -------------------------
+        # Robin BC setup
+        # -------------------------
+        self.robin_marker_ids = []
+        self.robin_coeffs = []  # coefficienti 'a' per ogni segmento
+        self.ds_robin = ufl.Measure("ds", domain=domain)
+
+        all_facets_robin = []
+        all_values_robin = []
+
+        for i, (side, tmin, tmax, a_coeff) in enumerate(robin_segments):
+            marker_id = i + 1
+            facet_tags_i, _ = create_boundary_facet_tags(domain, [(side, tmin, tmax)], L, H, marker_id)
+            self.robin_marker_ids.append(marker_id)
+            self.robin_coeffs.append(a_coeff)
+            all_facets_robin.append(facet_tags_i.indices)
+            all_values_robin.append(facet_tags_i.values)
+
+        if all_facets_robin:
+            facets = np.hstack(all_facets_robin).astype(np.int32)
+            values = np.hstack(all_values_robin).astype(np.int32)
+            order = np.argsort(facets, kind="mergesort")
+            facets = facets[order]
+            values = values[order]
+            unique_facets_rev, first_idx_rev = np.unique(facets[::-1], return_index=True)
+            last_idx = (len(facets) - 1) - first_idx_rev
+            last_idx_sorted = np.sort(last_idx)
+            facets_u = facets[last_idx_sorted]
+            values_u = values[last_idx_sorted]
+            self.robin_facet_tags = meshtags(domain, fdim, facets_u, values_u)
+            self.ds_robin = ufl.Measure("ds", domain=domain, subdomain_data=self.robin_facet_tags)
+
+        # -------------------------
+        # Fixed Dirichlet BC setup
+        # -------------------------
+        self.dirichlet_bc_dofs = []
+        self.dirichlet_bc_values = []
+        self.dirichlet_bc_funcs = []
+
+        for i, (side, tmin, tmax, value) in enumerate(dirichlet_bcs):
+            dofs, bc_func = create_boundary_condition_function(domain, V, [(side, tmin, tmax)], L, H)
+            self.dirichlet_bc_dofs.append(dofs)
+            self.dirichlet_bc_values.append(value)
+            # Initialize BC function with the fixed value
+            bc_func.x.array[:] = 0.0
+            bc_func.x.array[dofs] = value
+            bc_func.x.scatter_forward()
+            self.dirichlet_bc_funcs.append(bc_func)
+
+        self.n_dirichlet_bc = len(dirichlet_bcs)
+
+        # -------------------------
+        # Dirichlet disturbance setup
+        # -------------------------
+        self.dirichlet_dist_dofs = []
+        self.dirichlet_dist_funcs = []
+        self.dirichlet_dist_params = []  # (func_type, param)
+
+        for i, (side, tmin, tmax, func_type, param) in enumerate(dirichlet_disturbances):
+            dofs, bc_func = create_boundary_condition_function(domain, V, [(side, tmin, tmax)], L, H)
+            self.dirichlet_dist_dofs.append(dofs)
+            bc_func.x.array[:] = 0.0
+            bc_func.x.scatter_forward()
+            self.dirichlet_dist_funcs.append(bc_func)
+            self.dirichlet_dist_params.append((func_type, param))
+
+        self.n_dirichlet_dist = len(dirichlet_disturbances)
+
         self.a_state = (self.rho_c / dt_c) * T_trial * v * dx + self.k_therm * inner(
             ufl_grad(T_trial), ufl_grad(v)
         ) * dx
+
+        # Add Robin BC terms: ∫_Γ_robin a·T·v ds
+        for i, a_coeff in enumerate(self.robin_coeffs):
+            mid = self.robin_marker_ids[i]
+            self.a_state += Constant(domain, PETSc.ScalarType(a_coeff)) * T_trial * v * self.ds_robin(mid)
+
         self.a_adjoint = self.a_state
         # Pre-compile forms (avoid JIT in the time loop)
         self.a_state_compiled = form(self.a_state)
@@ -579,13 +662,18 @@ class TimeDepHeatSolver:
         # Temperature placeholder (updated in the loop)
         self._T_placeholder = Function(self.V)
 
+        # T_ref placeholder (for space-time varying reference)
+        self._T_ref_placeholder = Function(self.V)
+        self._T_ref_placeholder.x.array[:] = T_ref
+        self._T_ref_placeholder.x.scatter_forward()
+
         # Tracking forms (one per target zone)
         self._tracking_forms = []
         for chi_t in self.chi_targets:
             ufl_form = (
                 0.5
                 * self.alpha_track
-                * (self._T_placeholder - T_ref) ** 2
+                * (self._T_placeholder - self._T_ref_placeholder) ** 2
                 * chi_t
                 * dx
             )
@@ -702,6 +790,16 @@ class TimeDepHeatSolver:
                 # Update placeholder
                 self._T_placeholder.x.array[:] = T_current.x.array[:]
                 self._T_placeholder.x.scatter_forward()
+                # Update T_ref for this time step
+                if hasattr(self, 'T_ref_values'):
+                    T_ref_step = self.T_ref_values[step]
+                    if isinstance(T_ref_step, (int, float, np.floating)):
+                        # Scalar value (uniform in space)
+                        self._T_ref_placeholder.x.array[:] = T_ref_step
+                    else:
+                        # Function (varies in space)
+                        self._T_ref_placeholder.x.array[:] = T_ref_step.x.array[:]
+                    self._T_ref_placeholder.x.scatter_forward()
 
                 for compiled_form in self._tracking_forms:
                     val_step += assemble_scalar(compiled_form)

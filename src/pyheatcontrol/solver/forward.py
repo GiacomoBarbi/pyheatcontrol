@@ -2,7 +2,7 @@ from petsc4py import PETSc
 from ufl import dx, TestFunction
 import numpy as np
 from mpi4py import MPI
-
+import math
 
 from dolfinx.fem import form, Function, Constant, assemble_scalar, dirichletbc
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
@@ -49,6 +49,13 @@ def solve_forward_impl(
         dofs_i = self.dirichlet_dofs[i]
         bc_list.append(dirichletbc(uD_i, dofs_i))
 
+    # Add fixed Dirichlet BCs
+    for i in range(self.n_dirichlet_bc):
+        bc_list.append(dirichletbc(self.dirichlet_bc_funcs[i], self.dirichlet_bc_dofs[i]))
+    # Add Dirichlet disturbance BCs
+    for i in range(self.n_dirichlet_dist):
+        bc_list.append(dirichletbc(self.dirichlet_dist_funcs[i], self.dirichlet_dist_dofs[i]))
+
     # Assemble state matrix ONCE (Dirichlet DOFs are the same for all time steps)
     A = assemble_matrix(self.a_state_compiled, bcs=bc_list)
     A.assemble()
@@ -89,6 +96,23 @@ def solve_forward_impl(
     rhs_form = form(L_rhs_ufl)
 
     for step in range(self.num_steps):
+
+        # Update Dirichlet disturbance values for current time
+        t_current = (step + 1) * self.dt
+        for i in range(self.n_dirichlet_dist):
+            func_type, param = self.dirichlet_dist_params[i]
+            dofs_i = self.dirichlet_dist_dofs[i]
+            if func_type == "tanh":
+                val = math.tanh(param * t_current)
+            elif func_type == "sin":
+                val = math.sin(param * t_current)
+            elif func_type == "cos":
+                val = math.cos(param * t_current)
+            else:  # const
+                val = param
+            self.dirichlet_dist_funcs[i].x.array[dofs_i] = val
+            self.dirichlet_dist_funcs[i].x.scatter_forward()
+
         # -------------------------
         # Update Dirichlet BC values (NO re-assembly of matrix)
         # -------------------------

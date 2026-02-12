@@ -4,22 +4,25 @@ import numpy as np
 from dolfinx import mesh
 from dolfinx.fem import locate_dofs_geometrical, Function, functionspace
 
-
-def create_mesh(n, L):
-    """Create square mesh [0,L]x[0,L]."""
+def create_mesh(n, L, H=None):
+    """Create rectangular mesh [0,L]x[0,H]."""
+    if H is None:
+        H = L  # backward compatible
     Nx = 2**n
-    Ny = 2**n
+    Ny = max(1, int(2**n * H / L))  # scala con aspect ratio
     domain = mesh.create_rectangle(
         MPI.COMM_WORLD,
-        [[0.0, 0.0], [L, L]],
+        [[0.0, 0.0], [L, H]],
         [Nx, Ny],
         cell_type=mesh.CellType.quadrilateral,
     )
     return domain
 
 
-def mark_cells_in_boxes(domain, boxes, L):
+def mark_cells_in_boxes(domain, boxes, L, H=None):
     """Mark cells inside boxes (owned cells only, no ghosts)."""
+    if H is None:
+        H = L
     V0 = functionspace(domain, ("DG", 0))
     num_cells = V0.dofmap.index_map.size_local
     x_cells = domain.geometry.x
@@ -27,13 +30,11 @@ def mark_cells_in_boxes(domain, boxes, L):
     # Compute centers for owned cells only
     cell_centers = x_cells[cell_dofmap[:num_cells]].mean(axis=1)
     marker = np.zeros(num_cells, dtype=bool)
-
     for xmin, xmax, ymin, ymax in boxes:
         xmin_phys = xmin * L
         xmax_phys = xmax * L
-        ymin_phys = ymin * L
-        ymax_phys = ymax * L
-
+        ymin_phys = ymin * H
+        ymax_phys = ymax * H
         mask = np.logical_and.reduce(
             [
                 cell_centers[:, 0] >= xmin_phys,
@@ -43,33 +44,41 @@ def mark_cells_in_boxes(domain, boxes, L):
             ]
         )
         marker |= mask
-
     return marker
 
 
-def create_boundary_condition_function(domain, V, segments, L):
-    """Create boundary function for specified segments (Dirichlet)."""
+def create_boundary_condition_function(domain, V, segments, L, H):
 
     def boundary_predicate(x):
         eps = 1e-14
         mask = np.zeros(x.shape[1], dtype=bool)
 
         for side, tmin, tmax in segments:
-            tmin_L = tmin * L
-            tmax_L = tmax * L
+
+            if side in ("y0", "yL"):
+                scale = L
+            else:
+                scale = H
+
+            tmin_s = tmin * scale
+            tmax_s = tmax * scale
 
             if side == "yL":
-                on_side = np.isclose(x[1], L, atol=eps)
-                in_range = (x[0] >= tmin_L - eps) & (x[0] <= tmax_L + eps)
+                on_side = np.isclose(x[1], H, atol=eps)
+                in_range = (x[0] >= tmin_s - eps) & (x[0] <= tmax_s + eps)
+
             elif side == "y0":
                 on_side = np.isclose(x[1], 0.0, atol=eps)
-                in_range = (x[0] >= tmin_L - eps) & (x[0] <= tmax_L + eps)
+                in_range = (x[0] >= tmin_s - eps) & (x[0] <= tmax_s + eps)
+
             elif side == "x0":
                 on_side = np.isclose(x[0], 0.0, atol=eps)
-                in_range = (x[1] >= tmin_L - eps) & (x[1] <= tmax_L + eps)
+                in_range = (x[1] >= tmin_s - eps) & (x[1] <= tmax_s + eps)
+
             elif side == "xL":
                 on_side = np.isclose(x[0], L, atol=eps)
-                in_range = (x[1] >= tmin_L - eps) & (x[1] <= tmax_L + eps)
+                in_range = (x[1] >= tmin_s - eps) & (x[1] <= tmax_s + eps)
+
             else:
                 continue
 
@@ -83,12 +92,8 @@ def create_boundary_condition_function(domain, V, segments, L):
     return dofs, bc_func
 
 
-def create_boundary_facet_tags(domain, segments, L, marker_id):
-    """Create facet tags for boundary segments (Neumann/Dirichlet).
 
-    Returns:
-        (facet_tags, marker_id)
-    """
+def create_boundary_facet_tags(domain, segments, L, H, marker_id):
     from dolfinx.mesh import locate_entities_boundary, meshtags
 
     tdim = domain.topology.dim
@@ -99,21 +104,32 @@ def create_boundary_facet_tags(domain, segments, L, marker_id):
         mask = np.zeros(x.shape[1], dtype=bool)
 
         for side, tmin, tmax in segments:
-            tmin_L = tmin * L
-            tmax_L = tmax * L
 
-            if side == "yL":
-                on_side = np.isclose(x[1], L, atol=eps)
-                in_range = (x[0] >= tmin_L - eps) & (x[0] <= tmax_L + eps)
-            elif side == "y0":
+            # scala giusta per direzione tangenziale
+            if side in ("y0", "yL"):
+                scale = L
+            else:
+                scale = H
+
+            tmin_s = tmin * scale
+            tmax_s = tmax * scale
+
+            if side == "yL":  # top
+                on_side = np.isclose(x[1], H, atol=eps)
+                in_range = (x[0] >= tmin_s - eps) & (x[0] <= tmax_s + eps)
+
+            elif side == "y0":  # bottom
                 on_side = np.isclose(x[1], 0.0, atol=eps)
-                in_range = (x[0] >= tmin_L - eps) & (x[0] <= tmax_L + eps)
-            elif side == "x0":
+                in_range = (x[0] >= tmin_s - eps) & (x[0] <= tmax_s + eps)
+
+            elif side == "x0":  # left
                 on_side = np.isclose(x[0], 0.0, atol=eps)
-                in_range = (x[1] >= tmin_L - eps) & (x[1] <= tmax_L + eps)
-            elif side == "xL":
+                in_range = (x[1] >= tmin_s - eps) & (x[1] <= tmax_s + eps)
+
+            elif side == "xL":  # right
                 on_side = np.isclose(x[0], L, atol=eps)
-                in_range = (x[1] >= tmin_L - eps) & (x[1] <= tmax_L + eps)
+                in_range = (x[1] >= tmin_s - eps) & (x[1] <= tmax_s + eps)
+
             else:
                 continue
 
@@ -121,16 +137,13 @@ def create_boundary_facet_tags(domain, segments, L, marker_id):
 
         return mask
 
-    boundary_facets = locate_entities_boundary(domain, fdim, boundary_predicate).astype(
-        np.int32
-    )
+    boundary_facets = locate_entities_boundary(domain, fdim, boundary_predicate).astype(np.int32)
 
-    # meshtags requires sorted indices
     order = np.argsort(boundary_facets)
     boundary_facets = boundary_facets[order]
 
     values = np.full(boundary_facets.shape, marker_id, dtype=np.int32)
-    
 
     facet_tags = meshtags(domain, fdim, boundary_facets, values)
     return facet_tags, marker_id
+

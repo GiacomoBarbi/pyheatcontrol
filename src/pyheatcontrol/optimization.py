@@ -4,7 +4,7 @@ import ufl
 from mpi4py import MPI
 from petsc4py import PETSc
 from dolfinx.fem import Function, functionspace
-from pyheatcontrol.parsing_utils import parse_box, parse_boundary_segment
+from pyheatcontrol.parsing_utils import parse_box, parse_boundary_segment, parse_robin_segment, parse_dirichlet_bc, parse_dirichlet_disturbance
 from pyheatcontrol.mesh_utils import create_mesh
 from pyheatcontrol.io_utils import save_visualization_output
 from pyheatcontrol.solver import TimeDepHeatSolver
@@ -78,7 +78,7 @@ def armijo_line_search(
                 dofs_i = solver.neumann_dofs[i]
                 for m in range(num_steps):
                     u_neumann_funcs_time[m][i].x.array[dofs_i] = \
-                        u_neum_backup[m][i][dofs_i] - alpha * grad_neumann[m][i].x.array[dofs_i]
+                        u_neum_backup[m][i][dofs_i] + alpha * grad_neumann[m][i].x.array[dofs_i]
                     u_neumann_funcs_time[m][i].x.scatter_forward()
 
         # Update Dirichlet
@@ -135,6 +135,7 @@ def optimization_time_dependent(args):
 
     # Setup
     L = args.L
+    H = args.H if args.H is not None else L
     dt = args.dt
     T_final_time = args.T_final
     num_steps = int(T_final_time / dt)
@@ -143,10 +144,22 @@ def optimization_time_dependent(args):
     rho = args.rho
     c = args.c
     T_ambient = args.T_ambient
-    T_ref = args.T_ref
+    T_ref_base = args.T_ref
+    T_ref = T_ref_base  # initial value for logging
+    T_ref_func = None
+    if args.T_ref_func is not None:
+        parts = args.T_ref_func.split(",")
+        if len(parts) != 2:
+            raise ValueError("T-ref-func requires: func_type,param")
+        func_type = parts[0].strip()
+        param = float(parts[1])
+        if func_type not in ["const", "sin", "cos", "tanh"]:
+            raise ValueError(f"func_type must be one of const/sin/cos/tanh (got: {func_type})")
+        T_ref_func = (func_type, param)
+
 
     if rank == 0:
-        logger.info(f"Domain: {L * 100:.1f}cm x {L * 100:.1f}cm")
+        logger.info(f"Domain: {L * 100:.1f}cm x {H * 100:.1f}cm")
         logger.info(f"Time: {T_final_time}s, dt={dt}s, steps={num_steps}, Nt={Nt}")
         logger.info(f"Physical: k={k_val}, rho={rho}, c={c}")
         logger.info(f"T_ambient={T_ambient}°C, T_ref={T_ref}°C")
@@ -157,6 +170,9 @@ def optimization_time_dependent(args):
     ]
     ctrl_neumann = [parse_boundary_segment(s) for s in args.control_boundary_neumann]
     ctrl_distributed_boxes = [parse_box(s) for s in args.control_distributed]
+    robin_segments = [parse_robin_segment(s) for s in args.robin_boundary]
+    dirichlet_bcs = [parse_dirichlet_bc(s) for s in args.dirichlet_bc]
+    dirichlet_disturbances = [parse_dirichlet_disturbance(s) for s in args.dirichlet_disturbance]
     target_boxes = [parse_box(s) for s in args.target_zone]
     constraint_boxes = [parse_box(s) for s in args.constraint_zone]
     neumann_by_side = {"x0": [], "xL": [], "y0": [], "yL": []}
@@ -208,8 +224,58 @@ def optimization_time_dependent(args):
             logger.info(f"  {i + 1}. {box}")
 
     # Mesh
-    domain = create_mesh(args.n, L)
+    domain = create_mesh(args.n, L, H)
     V = functionspace(domain, ("Lagrange", 2))
+
+    # Pre-compute T_ref values for each time step
+    if args.T_ref_func_xt is not None:
+        # T_ref depends on space and time
+        parts = args.T_ref_func_xt.split(",")
+        if len(parts) != 2:
+            raise ValueError("T-ref-func-xt requires: func_type,param")
+        func_type_xt = parts[0].strip()
+        param_xt = float(parts[1])
+
+        T_ref_values = []
+        for step in range(num_steps + 1):
+            t = step * dt
+            T_ref_func_step = Function(V)
+            if func_type_xt == "sin_x_minus_t":
+                # r(x,t) = sin(param * (x - t))
+                T_ref_func_step.interpolate(lambda x, t=t, omega=param_xt: np.sin(omega * (x[0] - t)))
+            elif func_type_xt == "sin_x_plus_t":
+                # r(x,t) = sin(param * (x + t))
+                T_ref_func_step.interpolate(lambda x, t=t, omega=param_xt: np.sin(omega * (x[0] + t)))
+            elif func_type_xt == "cos_x_minus_t":
+                # r(x,t) = cos(param * (x - t))
+                T_ref_func_step.interpolate(lambda x, t=t, omega=param_xt: np.cos(omega * (x[0] - t)))
+            else:
+                raise ValueError(f"Unknown func_type_xt: {func_type_xt}")
+            T_ref_values.append(T_ref_func_step)
+    elif args.T_ref_func is not None:
+        # T_ref depends only on time (scalar per step)
+        parts = args.T_ref_func.split(",")
+        if len(parts) != 2:
+            raise ValueError("T-ref-func requires: func_type,param")
+        func_type = parts[0].strip()
+        param = float(parts[1])
+
+        T_ref_values = np.zeros(num_steps + 1)
+        for step in range(num_steps + 1):
+            t = step * dt
+            if func_type == "const":
+                T_ref_values[step] = param
+            elif func_type == "sin":
+                T_ref_values[step] = param * math.sin(t)
+            elif func_type == "cos":
+                T_ref_values[step] = param * math.cos(t)
+            elif func_type == "tanh":
+                T_ref_values[step] = param * math.tanh(t)
+    else:
+        # T_ref is constant
+        T_ref_values = np.full(num_steps + 1, T_ref_base)
+
+    T_ref = T_ref_base  # for backward compatibility with function calls
     
     if rank == 0:
         logger.debug(f"Domain bounds: x=[0, {L}], y=[0, {L}]")
@@ -235,12 +301,17 @@ def optimization_time_dependent(args):
         target_boxes,
         constraint_boxes,
         L,
+        H,
+        robin_segments,
+        dirichlet_bcs,
+        dirichlet_disturbances,
         args.alpha_track,
         args.alpha_u,
         args.gamma_u,
         args.beta_u,
         args.dirichlet_spatial_reg,
     )
+    solver.T_ref_values = T_ref_values
 
     # Neumann control: space-time Function (P2 in space)
     u_neumann_funcs_time = []
