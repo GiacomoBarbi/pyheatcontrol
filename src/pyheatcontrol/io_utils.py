@@ -273,10 +273,12 @@ def save_visualization_output(
             T_cell.interpolate(y_out)
             T_cell.x.scatter_forward()
 
-            sc_lower = args.sc_lower if args.sc_lower is not None else args.T_cure
-            sc_upper = args.sc_upper if args.sc_upper is not None else 1e10
-
-            viol_L = np.maximum(0.0, sc_lower - T_cell.x.array)
+            sc_lower = args.sc_lower if hasattr(args, 'sc_lower') and args.sc_lower is not None else getattr(args, 'T_cure', None)
+            sc_upper = args.sc_upper if hasattr(args, 'sc_upper') and args.sc_upper is not None else 1e10
+            if sc_lower is not None:
+                viol_L = np.maximum(0.0, sc_lower - T_cell.x.array)
+            else:
+                viol_L = np.zeros_like(T_cell.x.array)
             viol_U = np.maximum(0.0, T_cell.x.array - sc_upper)
 
             vL_out.x.array[:] = 0.0
