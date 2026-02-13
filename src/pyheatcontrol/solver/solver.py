@@ -921,16 +921,57 @@ class TimeDepHeatSolver:
                     J_reg_H1 += coef * assemble_scalar(self._dir_H1t_forms[j])
 
         # ============================================================
+        # Augmented Lagrangian penalty for state constraints
+        # J_penalty = ∫∫_Ωc [μ·violation + (β/2)·violation²] dx dt
+        # ============================================================
+        J_penalty = 0.0
+        if hasattr(self, 'sc_type') and self.sc_type is not None and np.any(self.sc_marker):
+            dx = ufl.Measure("dx", domain=self.domain)
+            mask = self.sc_marker.astype(bool)
+            n_local = self.Vc.dofmap.index_map.size_local
+
+            for m in range(self.sc_start_step, self.sc_end_step + 1):
+                weight = 0.5 if (m == self.sc_start_step or m == self.sc_end_step) else 1.0
+
+                # Project temperature to DG0
+                self._T_cell.interpolate(Y_all[m])
+                T_arr = self._T_cell.x.array[:n_local]
+
+                # Get multipliers
+                muL = self.mu_lower_time[m].x.array[:n_local]
+                muU = self.mu_upper_time[m].x.array[:n_local]
+
+                # Compute violations
+                if self.sc_type in ["lower", "box"] and self.sc_lower is not None:
+                    violL = np.maximum(0.0, self.sc_lower - T_arr) * mask
+                    # μ·violation + (β/2)·violation²
+                    J_penalty += weight * self.dt * np.sum(muL * violL)
+                    J_penalty += weight * self.dt * 0.5 * self.beta_sc * np.sum(violL**2)
+
+                if self.sc_type in ["upper", "box"] and self.sc_upper is not None:
+                    violU = np.maximum(0.0, T_arr - self.sc_upper) * mask
+                    J_penalty += weight * self.dt * np.sum(muU * violU)
+                    J_penalty += weight * self.dt * 0.5 * self.beta_sc * np.sum(violU**2)
+
+        # ============================================================
         # MPI reduction: assemble_scalar returns local contributions only
         comm = self.domain.comm
         J_track = comm.allreduce(J_track, op=MPI.SUM)
         J_reg_L2 = comm.allreduce(J_reg_L2, op=MPI.SUM)
         J_reg_H1 = comm.allreduce(J_reg_H1, op=MPI.SUM)
-
-        J_total = J_track + J_reg_L2 + J_reg_H1
+        J_penalty = comm.allreduce(J_penalty, op=MPI.SUM)
+        J_total = J_track + J_reg_L2 + J_reg_H1 + J_penalty
         if self.domain.comm.rank == 0:
             logger.debug(
-                f"J_total={J_total:.12e} J_track={J_track:.12e} J_regL2={J_reg_L2:.12e} J_regH1={J_reg_H1:.12e}"
+                f"J_total={J_total:.12e} J_track={J_track:.12e} J_regL2={J_reg_L2:.12e} J_regH1={J_reg_H1:.12e} J_penalty={J_penalty:.12e}"
             )
-
-        return J_total, J_track, J_reg_L2, J_reg_H1
+        return J_total, J_track, J_reg_L2, J_reg_H1, J_penalty
+# ===============================================================================================
+    def set_constraint_params(self, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step):
+        """Set state constraint parameters for augmented Lagrangian penalty."""
+        self.sc_type = sc_type
+        self.sc_lower = sc_lower
+        self.sc_upper = sc_upper
+        self.beta_sc = beta
+        self.sc_start_step = sc_start_step
+        self.sc_end_step = sc_end_step

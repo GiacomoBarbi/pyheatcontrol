@@ -64,11 +64,6 @@ def solve_forward_impl(
     # -------------------------------------------------
     # RHS placeholders + precompiled RHS form (ONE-TIME)
     # -------------------------------------------------
-    # Multiplier term placeholder (DG0)
-    mu_sum_cell = Function(self.Vc)
-    mu_sum_cell.x.array[:] = 0.0
-    mu_sum_cell.x.scatter_forward()
-
     # Distributed control placeholders (P2)
     u_dist_cur = []
     for i in range(self.n_ctrl_distributed):
@@ -84,9 +79,6 @@ def solve_forward_impl(
     # Distributed source term
     for i in range(self.n_ctrl_distributed):
         L_rhs_ufl += u_dist_cur[i] * self.chi_distributed_V[i] * v * dx
-
-    # State-constraint multiplier term (DG0)
-    L_rhs_ufl += mu_sum_cell * self.chi_sc_cell * v * dx
 
     # Neumann boundary term
     for i, mid in enumerate(self.neumann_marker_ids):
@@ -104,13 +96,26 @@ def solve_forward_impl(
             dofs_i = self.dirichlet_dist_dofs[i]
             if func_type == "tanh":
                 val = math.tanh(param * t_current)
+                self.dirichlet_dist_funcs[i].x.array[dofs_i] = val
             elif func_type == "sin":
                 val = math.sin(param * t_current)
+                self.dirichlet_dist_funcs[i].x.array[dofs_i] = val
             elif func_type == "cos":
                 val = math.cos(param * t_current)
+                self.dirichlet_dist_funcs[i].x.array[dofs_i] = val
+            elif func_type == "sin_y_cos_t":
+                # d(y,t) = sin(param * y) * cos(t)
+                self.dirichlet_dist_funcs[i].interpolate(
+                    lambda x, t=t_current, p=param: np.sin(p * x[1]) * np.cos(t)
+                )
+            elif func_type == "sin_y_sin_t":
+                # d(y,t) = sin(param * y) * sin(t)
+                self.dirichlet_dist_funcs[i].interpolate(
+                    lambda x, t=t_current, p=param: np.sin(p * x[1]) * np.sin(t)
+                )
             else:  # const
                 val = param
-            self.dirichlet_dist_funcs[i].x.array[dofs_i] = val
+                self.dirichlet_dist_funcs[i].x.array[dofs_i] = val
             self.dirichlet_dist_funcs[i].x.scatter_forward()
 
         # -------------------------
@@ -240,12 +245,6 @@ def solve_forward_impl(
                 u_dist_cur[i].x.petsc_vec
             )
             u_dist_cur[i].x.scatter_forward()
-
-        # Update multiplier sum (DG0); +1 because state is at end of interval
-        mu_sum_cell.x.array[:] = (
-            self.mu_lower_time[step + 1].x.array + self.mu_upper_time[step + 1].x.array
-        )
-        mu_sum_cell.x.scatter_forward()
 
         # -------------------------
         # solve

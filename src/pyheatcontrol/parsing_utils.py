@@ -47,7 +47,12 @@ def parse_dirichlet_bc(s: str):
     return (side, tmin, tmax, value)
 
 def parse_dirichlet_disturbance(s: str):
-    """Parse Dirichlet disturbance segment: side,tmin,tmax,func_type,param"""
+    """Parse Dirichlet disturbance segment: side,tmin,tmax,func_type,param
+
+    func_type can be:
+      - tanh, sin, cos, const (scalar in space, varies in time)
+      - sin_y_cos_t (varies in space and time along y-boundary)
+    """
     parts = s.split(",")
     if len(parts) != 5:
         raise ValueError(f"Dirichlet disturbance requires: side,tmin,tmax,func_type,param (got: {s})")
@@ -58,6 +63,6 @@ def parse_dirichlet_disturbance(s: str):
     param = float(parts[4])
     if side not in ["x0", "xL", "y0", "yL"]:
         raise ValueError(f"side must be one of x0/xL/y0/yL (got: {side})")
-    if func_type not in ["tanh", "sin", "cos", "const"]:
-        raise ValueError(f"func_type must be one of tanh/sin/cos/const (got: {func_type})")
+    if func_type not in ["tanh", "sin", "cos", "const", "sin_y_cos_t", "sin_y_sin_t"]:
+        raise ValueError(f"func_type must be one of tanh/sin/cos/const/sin_y_cos_t/sin_y_sin_t (got: {func_type})")
     return (side, tmin, tmax, func_type, param)

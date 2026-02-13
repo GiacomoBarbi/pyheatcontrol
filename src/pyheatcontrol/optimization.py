@@ -96,7 +96,7 @@ def armijo_line_search(
             u_distributed_funcs_time,
             u_dirichlet_funcs_time
         )
-        J_trial, _, _, _ = solver.compute_cost(
+        J_trial, _, _, _, _ = solver.compute_cost(
             u_distributed_funcs_time,
             u_neumann_funcs_time,
             u_dirichlet_funcs_time,
@@ -249,6 +249,9 @@ def optimization_time_dependent(args):
             elif func_type_xt == "cos_x_minus_t":
                 # r(x,t) = cos(param * (x - t))
                 T_ref_func_step.interpolate(lambda x, t=t, omega=param_xt: np.cos(omega * (x[0] - t)))
+            elif func_type_xt == "one_minus_y_sin_x_minus_t":
+            # r(x,y,t) = (1 - y) * sin(x - t)
+                T_ref_func_step.interpolate(lambda x, t=t: (1 - x[1]) * np.sin(x[0] - t))
             else:
                 raise ValueError(f"Unknown func_type_xt: {func_type_xt}")
             T_ref_values.append(T_ref_func_step)
@@ -312,6 +315,7 @@ def optimization_time_dependent(args):
         args.dirichlet_spatial_reg,
     )
     solver.T_ref_values = T_ref_values
+
 
     # Neumann control: space-time Function (P2 in space)
     u_neumann_funcs_time = []
@@ -426,6 +430,15 @@ def optimization_time_dependent(args):
     sc_start_step = max(0, min(sc_start_step, num_steps))
     sc_end_step = max(sc_start_step, min(sc_end_step, num_steps))
 
+    solver.set_constraint_params(
+        args.sc_type,
+        args.sc_lower,
+        args.sc_upper,
+        args.beta,
+        sc_start_step,
+        sc_end_step,
+    )
+
     # Initialize multipliers to zero (always, even without constraints)
     Vc = functionspace(domain, ("DG", 0))
     solver.mu_lower_time = []
@@ -493,7 +506,7 @@ def optimization_time_dependent(args):
                 u_distributed_funcs_time,
                 u_dirichlet_funcs_time,
             )
-            J, J_track, J_reg_L2, J_reg_H1 = solver.compute_cost(
+            J, J_track, J_reg_L2, J_reg_H1, J_penalty = solver.compute_cost(
                 u_distributed_funcs_time,
                 u_neumann_funcs_time,
                 u_dirichlet_funcs_time,
@@ -646,7 +659,7 @@ def optimization_time_dependent(args):
                 u_distributed_funcs_time,
                 u_dirichlet_funcs_time,
             )
-            J, J_track, J_reg_L2, J_reg_H1 = solver.compute_cost(
+            J, J_track, J_reg_L2, J_reg_H1, J_penalty = solver.compute_cost(
                 u_distributed_funcs_time,
                 u_neumann_funcs_time,
                 u_dirichlet_funcs_time,
@@ -734,7 +747,7 @@ def optimization_time_dependent(args):
             u_distributed_funcs_time,
             u_dirichlet_funcs_time,
         )
-        J_mu, Jt_mu, JL2_mu, JH1_mu = solver.compute_cost(
+        J_mu, Jt_mu, JL2_mu, JH1_mu, Jp_mu = solver.compute_cost(
             u_distributed_funcs_time,
             u_neumann_funcs_time,
             u_dirichlet_funcs_time,
@@ -783,7 +796,7 @@ def optimization_time_dependent(args):
     Y_final_all = solver.solve_forward(
         u_neumann_funcs_time, u_distributed_funcs_time, u_dirichlet_funcs_time
     )
-    J_final, J_track_final, J_reg_L2_final, J_reg_H1_final = solver.compute_cost(
+    J_final, J_track_final, J_reg_L2_final, J_reg_H1_final, J_penalty_final = solver.compute_cost(
         u_distributed_funcs_time,
         u_neumann_funcs_time,
         u_dirichlet_funcs_time,
