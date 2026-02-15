@@ -353,11 +353,11 @@ class TimeDepHeatSolver:
         # -------------------------
         self.distributed_markers = []
         for box in control_distributed_boxes:
-            self.distributed_markers.append(mark_cells_in_boxes(domain, [box], L, self.H))
+            self.distributed_markers.append(mark_cells_in_boxes(domain, [box], L, self.H, Vc=self.Vc))
 
         self.chi_distributed_V = []
         if self.n_ctrl_distributed > 0:
-            V_dg0 = functionspace(domain, ("DG", 0))
+            V_dg0 = self.Vc
             n_local = V_dg0.dofmap.index_map.size_local
             for marker in self.distributed_markers:
                 chi_dg0 = Function(V_dg0)
@@ -425,11 +425,11 @@ class TimeDepHeatSolver:
         # -------------------------
         self.target_markers = []
         for box in target_boxes:
-            self.target_markers.append(mark_cells_in_boxes(domain, [box], L, self.H))
+            self.target_markers.append(mark_cells_in_boxes(domain, [box], L, self.H, Vc=self.Vc))
 
         self.chi_targets = []
         for marker in self.target_markers:
-            V_dg0 = functionspace(domain, ("DG", 0))
+            V_dg0 = self.Vc
             chi_dg0 = Function(V_dg0)
             n_local = V_dg0.dofmap.index_map.size_local
             chi_dg0.x.array[:n_local] = marker.astype(PETSc.ScalarType)
@@ -443,12 +443,12 @@ class TimeDepHeatSolver:
         # -------------------------
         self.constraint_markers = []
         for box in constraint_boxes:
-            self.constraint_markers.append(mark_cells_in_boxes(domain, [box], L, self.H))
+            self.constraint_markers.append(mark_cells_in_boxes(domain, [box], L, self.H, Vc=self.Vc))
 
         # union of all constraint boxes
         if len(self.constraint_markers) == 0:
             self.sc_marker = np.zeros(
-                functionspace(domain, ("DG", 0)).dofmap.index_map.size_local, dtype=bool
+                self.Vc.dofmap.index_map.size_local, dtype=bool
             )
         else:
             self.sc_marker = np.zeros_like(self.constraint_markers[0])
@@ -460,7 +460,7 @@ class TimeDepHeatSolver:
         n_local = self.Vc.dofmap.index_map.size_local
         self.chi_sc_cell.x.array[:n_local] = self.sc_marker.astype(PETSc.ScalarType)
         self.chi_sc_cell.x.scatter_forward()
-        chi_sc_dg0 = Function(functionspace(domain, ("DG", 0)))
+        chi_sc_dg0 = Function(self.Vc)
         chi_sc_dg0.x.array[:n_local] = self.sc_marker.astype(PETSc.ScalarType)
         chi_sc_dg0.x.scatter_forward()
         self.chi_sc = Function(self.V0)
@@ -938,8 +938,8 @@ class TimeDepHeatSolver:
                 T_arr = self._T_cell.x.array[:n_local]
 
                 # Get multipliers
-                muL = self.mu_lower_time[m].x.array[:n_local]
-                muU = self.mu_upper_time[m].x.array[:n_local]
+                muL = self.mu_lower_time[m, :n_local]
+                muU = self.mu_upper_time[m, :n_local]
 
                 # Compute violations
                 if self.sc_type in ["lower", "box"] and self.sc_lower is not None:

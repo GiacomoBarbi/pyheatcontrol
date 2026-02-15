@@ -16,11 +16,11 @@ def armijo_line_search(
     u_distributed_funcs_time,
     u_neumann_funcs_time,
     u_dirichlet_funcs_time,
-    grad_distributed,  # solver.grad_u_distributed_time
-    grad_neumann,      # solver.grad_q_neumann_time
-    grad_dirichlet,    # solver.grad_u_dirichlet_time
+    dir_distributed,   # search direction (CG or steepest)
+    dir_neumann,       # search direction (CG or steepest)
+    dir_dirichlet,     # search direction (CG or steepest)
     J_current,
-    grad_norm_sq,
+    dir_dot_grad,      # <direction, gradient> for Armijo
     T_ref,
     num_steps,
     alpha_init=10.0,
@@ -59,7 +59,7 @@ def armijo_line_search(
                         for m in range(num_steps)]
 
     # Armijo condition threshold
-    armijo_threshold = J_current - c * alpha * grad_norm_sq
+    armijo_threshold = J_current - c * alpha * dir_dot_grad
 
     for ls_iter in range(max_iter):
         # Try step with current alpha
@@ -69,7 +69,7 @@ def armijo_line_search(
                 dofs_j = solver.distributed_dofs[j]
                 for m in range(num_steps):
                     u_distributed_funcs_time[m][j].x.array[dofs_j] = \
-                        u_dist_backup[m][j][dofs_j] - alpha * grad_distributed[m][j].x.array[dofs_j]
+                        u_dist_backup[m][j][dofs_j] - alpha * dir_distributed[m][j][dofs_j]
                     u_distributed_funcs_time[m][j].x.scatter_forward()
 
         # Update Neumann
@@ -78,7 +78,7 @@ def armijo_line_search(
                 dofs_i = solver.neumann_dofs[i]
                 for m in range(num_steps):
                     u_neumann_funcs_time[m][i].x.array[dofs_i] = \
-                        u_neum_backup[m][i][dofs_i] + alpha * grad_neumann[m][i].x.array[dofs_i]
+                        u_neum_backup[m][i][dofs_i] + alpha * dir_neumann[m][i][dofs_i]
                     u_neumann_funcs_time[m][i].x.scatter_forward()
 
         # Update Dirichlet
@@ -87,7 +87,7 @@ def armijo_line_search(
                 dofs_j = solver.dirichlet_dofs[j]
                 for m in range(num_steps):
                     u_dirichlet_funcs_time[m][j].x.array[dofs_j] = \
-                        u_dir_backup[m][j][dofs_j] - alpha * grad_dirichlet[m][j].x.array[dofs_j]
+                        u_dir_backup[m][j][dofs_j] - alpha * dir_dirichlet[m][j][dofs_j]
                     u_dirichlet_funcs_time[m][j].x.scatter_forward()
 
         # Evaluate J at trial point
@@ -112,7 +112,7 @@ def armijo_line_search(
 
         # Reduce step size
         alpha *= rho
-        armijo_threshold = J_current - c * alpha * grad_norm_sq
+        armijo_threshold = J_current - c * alpha * dir_dot_grad
 
     # Max iterations reached - return last alpha
     if rank == 0:
@@ -440,16 +440,12 @@ def optimization_time_dependent(args):
     )
 
     # Initialize multipliers to zero (always, even without constraints)
-    Vc = functionspace(domain, ("DG", 0))
-    solver.mu_lower_time = []
-    solver.mu_upper_time = []
-    for _ in range(num_steps + 1):
-        mu_L = Function(Vc)
-        mu_L.x.array[:] = 0.0
-        mu_U = Function(Vc)
-        mu_U.x.array[:] = 0.0
-        solver.mu_lower_time.append(mu_L)
-        solver.mu_upper_time.append(mu_U)
+    # FIX: Use numpy arrays instead of Function lists to avoid MPI communicator exhaustion
+    n_dofs_Vc = solver.Vc.dofmap.index_map.size_local + solver.Vc.dofmap.index_map.num_ghosts
+    solver.mu_lower_time = np.zeros((num_steps + 1, n_dofs_Vc), dtype=np.float64)
+    solver.mu_upper_time = np.zeros((num_steps + 1, n_dofs_Vc), dtype=np.float64)
+    # Working Function for assembly operations
+    solver._mu_work = Function(solver.Vc)
 
     if rank == 0 and has_constraints:
         logger.info(f"\nPATH-CONSTRAINT Window: t ∈ [{sc_start_time:.1f}, {sc_end_time:.1f}]s")
@@ -593,14 +589,14 @@ def optimization_time_dependent(args):
                 logger.debug(f"grad = {grad.copy()}")
 
             # ============================================================
-            # Line search to find optimal step size
+            # Conjugate Gradient direction computation
             # ============================================================
-            # First compute gradient norm (needed for Armijo condition)
+            # Compute gradient norm squared
             grad_sq = 0.0
+            nloc = V.dofmap.index_map.size_local
 
             # Dirichlet gradient norm
             if solver.n_ctrl_dirichlet > 0:
-                nloc = V.dofmap.index_map.size_local
                 for j in range(solver.n_ctrl_dirichlet):
                     dofs_j = solver.dirichlet_dofs[j]
                     dofs_j_owned = dofs_j[dofs_j < nloc]
@@ -610,7 +606,6 @@ def optimization_time_dependent(args):
 
             # Neumann gradient norm
             if solver.n_ctrl_neumann > 0:
-                nloc = V.dofmap.index_map.size_local
                 for i in range(solver.n_ctrl_neumann):
                     dofs_i = solver.neumann_dofs[i]
                     dofs_i_owned = dofs_i[dofs_i < nloc]
@@ -620,7 +615,6 @@ def optimization_time_dependent(args):
 
             # Distributed gradient norm
             if solver.n_ctrl_distributed > 0:
-                nloc = V.dofmap.index_map.size_local
                 for j in range(solver.n_ctrl_distributed):
                     dofs_j = solver.distributed_dofs[j]
                     dofs_j_owned = dofs_j[dofs_j < nloc]
@@ -631,17 +625,79 @@ def optimization_time_dependent(args):
             grad_sq = comm.allreduce(grad_sq, op=MPI.SUM)
             grad_norm = np.sqrt(grad_sq)
 
-            # Armijo line search
+            # Conjugate Gradient: compute beta and direction
+            # Initialize direction arrays on first iteration
+            if inner_iter == 0:
+                grad_sq_old = 0.0
+                # Initialize direction = -gradient (steepest descent for first iter)
+                dir_dirichlet = [[solver.grad_u_dirichlet_time[m][j].x.array.copy() 
+                                  for j in range(solver.n_ctrl_dirichlet)]
+                                 for m in range(num_steps)] if solver.n_ctrl_dirichlet > 0 else None
+                dir_neumann = [[solver.grad_q_neumann_time[m][i].x.array.copy()
+                                for i in range(solver.n_ctrl_neumann)]
+                               for m in range(num_steps)] if solver.n_ctrl_neumann > 0 else None
+                dir_distributed = [[solver.grad_u_distributed_time[m][j].x.array.copy()
+                                    for j in range(solver.n_ctrl_distributed)]
+                                   for m in range(num_steps)] if solver.n_ctrl_distributed > 0 else None
+            else:
+                # Fletcher-Reeves beta
+                beta = grad_sq / grad_sq_old if grad_sq_old > 1e-16 else 0.0
+                
+                # Update direction: d = -grad + beta * d_old
+                if solver.n_ctrl_dirichlet > 0:
+                    for j in range(solver.n_ctrl_dirichlet):
+                        for m in range(num_steps):
+                            dir_dirichlet[m][j] = solver.grad_u_dirichlet_time[m][j].x.array.copy() + beta * dir_dirichlet[m][j]
+                
+                if solver.n_ctrl_neumann > 0:
+                    for i in range(solver.n_ctrl_neumann):
+                        for m in range(num_steps):
+                            dir_neumann[m][i] = solver.grad_q_neumann_time[m][i].x.array.copy() + beta * dir_neumann[m][i]
+                
+                if solver.n_ctrl_distributed > 0:
+                    for j in range(solver.n_ctrl_distributed):
+                        for m in range(num_steps):
+                            dir_distributed[m][j] = solver.grad_u_distributed_time[m][j].x.array.copy() + beta * dir_distributed[m][j]
+
+            # Save grad_sq for next iteration
+            grad_sq_old = grad_sq
+
+            # Compute <direction, gradient> for Armijo (= grad_sq for first iter)
+            dir_dot_grad = 0.0
+            if solver.n_ctrl_dirichlet > 0:
+                for j in range(solver.n_ctrl_dirichlet):
+                    dofs_j = solver.dirichlet_dofs[j]
+                    dofs_j_owned = dofs_j[dofs_j < nloc]
+                    for m in range(num_steps):
+                        dir_dot_grad += float(np.sum(dir_dirichlet[m][j][dofs_j_owned] * 
+                                                     solver.grad_u_dirichlet_time[m][j].x.array[dofs_j_owned]))
+            if solver.n_ctrl_neumann > 0:
+                for i in range(solver.n_ctrl_neumann):
+                    dofs_i = solver.neumann_dofs[i]
+                    dofs_i_owned = dofs_i[dofs_i < nloc]
+                    for m in range(num_steps):
+                        dir_dot_grad += float(np.sum(dir_neumann[m][i][dofs_i_owned] *
+                                                     solver.grad_q_neumann_time[m][i].x.array[dofs_i_owned]))
+            if solver.n_ctrl_distributed > 0:
+                for j in range(solver.n_ctrl_distributed):
+                    dofs_j = solver.distributed_dofs[j]
+                    dofs_j_owned = dofs_j[dofs_j < nloc]
+                    for m in range(num_steps):
+                        dir_dot_grad += float(np.sum(dir_distributed[m][j][dofs_j_owned] *
+                                                     solver.grad_u_distributed_time[m][j].x.array[dofs_j_owned]))
+            dir_dot_grad = comm.allreduce(dir_dot_grad, op=MPI.SUM)
+
+            # Armijo line search with CG direction
             alpha = armijo_line_search(
                 solver,
                 u_distributed_funcs_time,
                 u_neumann_funcs_time,
                 u_dirichlet_funcs_time,
-                solver.grad_u_distributed_time,
-                solver.grad_q_neumann_time,
-                solver.grad_u_dirichlet_time,
+                dir_distributed,
+                dir_neumann,
+                dir_dirichlet,
                 J,  # Current objective
-                grad_sq,
+                dir_dot_grad,
                 T_ref,
                 num_steps,
                 alpha_init=args.lr,  # Use args.lr as initial guess
@@ -710,7 +766,7 @@ def optimization_time_dependent(args):
                 break
 
         # functionspace/Function/interpolate are MPI collective
-        Vc = functionspace(domain, ("DG", 0))
+        Vc = solver.Vc
         Tcell = Function(Vc)
         Tcell.interpolate(Y_all[-1])
         if rank == 0:
@@ -765,8 +821,8 @@ def optimization_time_dependent(args):
             muL_max = 0.0
             muU_max = 0.0
             for m in range(sc_start_step, sc_end_step + 1):
-                muL_max = max(muL_max, np.max(solver.mu_lower_time[m].x.array))
-                muU_max = max(muU_max, np.max(solver.mu_upper_time[m].x.array))
+                muL_max = max(muL_max, np.max(solver.mu_lower_time[m]))
+                muU_max = max(muU_max, np.max(solver.mu_upper_time[m]))
             logger.debug(f"μL_max={muL_max:.3e}, μU_max={muU_max:.3e}")
 
             if u_controls.size > 0:
@@ -788,7 +844,7 @@ def optimization_time_dependent(args):
     if rank == 0:
         if has_constraints:
             logger.debug(
-                f"CHECK-MU-FINAL max muL at final = {max(np.max(solver.mu_lower_time[m].x.array) for m in range(sc_start_step, sc_end_step + 1))}"
+                f"CHECK-MU-FINAL max muL at final = {max(np.max(solver.mu_lower_time[m]) for m in range(sc_start_step, sc_end_step + 1))}"
             )
         else:
             logger.debug("CHECK-MU-FINAL no constraints -> skipping mu check")
@@ -1046,7 +1102,7 @@ def optimization_time_dependent(args):
 
     # Postprocessing: mean temperature in target zones
     # functionspace/Function/assemble_scalar are MPI collective
-    V0_dg0 = functionspace(domain, ("DG", 0))
+    V0_dg0 = solver.Vc
     from dolfinx.fem import assemble_scalar, form
 
     dx = ufl.Measure("dx", domain=domain)
@@ -1059,7 +1115,7 @@ def optimization_time_dependent(args):
         T_cell = Function(V0_dg0)
         T_cell.interpolate(T_final_diag)
 
-        Vc = functionspace(domain, ("DG", 0))
+        Vc = solver.Vc
         Tcell_sc = Function(Vc)
         Tcell_sc.interpolate(T_final_diag)
 
@@ -1155,7 +1211,7 @@ def optimization_time_dependent(args):
     if has_constraints:
         for m in range(sc_start_step, sc_end_step + 1):
             # interpolate nodal T to DG0 (cellwise) to match sc_marker
-            Vc = functionspace(domain, ("DG", 0))
+            Vc = solver.Vc
             Tcell = Function(Vc)
             Tcell.interpolate(Y_final_all[m])
 

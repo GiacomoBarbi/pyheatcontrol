@@ -699,8 +699,8 @@ def update_multiplier_mu_impl(
         T_cell = self._T_cell
 
         # Get old multipliers (already DG0)
-        muL_old = self.mu_lower_time[m].x.array.copy()
-        muU_old = self.mu_upper_time[m].x.array.copy()
+        muL_old = self.mu_lower_time[m].copy()
+        muU_old = self.mu_upper_time[m].copy()
 
         # Compute violations (DG0 arrays)
         violL = np.zeros_like(T_cell.x.array)
@@ -722,10 +722,10 @@ def update_multiplier_mu_impl(
         muU_new = np.maximum(0.0, muU_new) * mask
 
         # Write back (DG0)
-        self.mu_lower_time[m].x.array[:] = muL_new
-        self.mu_upper_time[m].x.array[:] = muU_new
-        self.mu_lower_time[m].x.scatter_forward()
-        self.mu_upper_time[m].x.scatter_forward()
+        self.mu_lower_time[m, :] = muL_new
+        self.mu_upper_time[m, :] = muU_new
+        # scatter not needed for numpy
+        # scatter not needed for numpy
 
         # Track convergence measures
         dL = float(np.max(np.abs(muL_new - muL_old))) if muL_new.size else 0.0
@@ -769,9 +769,9 @@ def update_multiplier_mu_impl(
     max_in_U = 0.0
     for m in range(sc_start_step, sc_end_step + 1):
         muL = Function(Vc_summary)
-        muL.interpolate(self.mu_lower_time[m])
+        muL.x.array[:] = self.mu_lower_time[m]
         muU = Function(Vc_summary)
-        muU.interpolate(self.mu_upper_time[m])
+        muU.x.array[:] = self.mu_upper_time[m]
         aL = muL.x.array[:n_local]
         aU = muU.x.array[:n_local]
         if aL.size:

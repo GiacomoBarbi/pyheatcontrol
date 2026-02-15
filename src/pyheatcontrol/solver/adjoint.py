@@ -87,10 +87,10 @@ def solve_adjoint_impl(self, Y_all, T_ref):
                 T_ref_ph.x.array[:] = T_ref_step.x.array[:]
             T_ref_ph.x.scatter_forward()
 
-        self.mu_lower_time[m].x.petsc_vec.copy(muL_ph.x.petsc_vec)
+        muL_ph.x.array[:] = self.mu_lower_time[m]
         muL_ph.x.scatter_forward()
 
-        self.mu_upper_time[m].x.petsc_vec.copy(muU_ph.x.petsc_vec)
+        muU_ph.x.array[:] = self.mu_upper_time[m]
         muU_ph.x.scatter_forward()
 
         # Select correct precompiled form (trapezoidal weight)

@@ -19,11 +19,11 @@ def create_mesh(n, L, H=None):
     return domain
 
 
-def mark_cells_in_boxes(domain, boxes, L, H=None):
+def mark_cells_in_boxes(domain, boxes, L, H=None, Vc=None):
     """Mark cells inside boxes (owned cells only, no ghosts)."""
     if H is None:
         H = L
-    V0 = functionspace(domain, ("DG", 0))
+    V0 = Vc if Vc is not None else functionspace(domain, ("DG", 0))
     num_cells = V0.dofmap.index_map.size_local
     x_cells = domain.geometry.x
     cell_dofmap = domain.geometry.dofmap

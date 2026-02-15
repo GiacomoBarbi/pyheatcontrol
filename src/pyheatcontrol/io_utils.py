@@ -258,13 +258,13 @@ def save_visualization_output(
 
             # Multipliers (DG0)
             if hasattr(solver, "mu_lower_time") and m < len(solver.mu_lower_time):
-                muL_out.interpolate(solver.mu_lower_time[m])
+                muL_out.x.array[:] = solver.mu_lower_time[m]
             else:
                 muL_out.x.array[:] = 0.0
             muL_out.x.scatter_forward()
 
             if hasattr(solver, "mu_upper_time") and m < len(solver.mu_upper_time):
-                muU_out.interpolate(solver.mu_upper_time[m])
+                muU_out.x.array[:] = solver.mu_upper_time[m]
             else:
                 muU_out.x.array[:] = 0.0
             muU_out.x.scatter_forward()
@@ -289,24 +289,13 @@ def save_visualization_output(
             vL_out.x.scatter_forward()
             vU_out.x.scatter_forward()
 
-            # Write fields at this timestep
-            vtk.write_function(y_out, t)
-            vtk.write_function(p_out, t)
-            vtk.write_function(uD_out, t)
-            vtk.write_function(qN_out, t)
-            vtk.write_function(uDir_out, t)
-
-            vtk.write_function(muL_out, t)
-            vtk.write_function(muU_out, t)
-            vtk.write_function(vL_out, t)
-            vtk.write_function(vU_out, t)
-
-            # Zone markers at each timestep
-            vtk.write_function(target_zone, t)
-            vtk.write_function(control_zone_dist, t)
-            vtk.write_function(constraint_zone, t)
-            vtk.write_function(omega_qn, t)
-            vtk.write_function(omega_qd, t)
+            # Write all fields at this timestep (single call = single file per timestep)
+            vtk.write_function(
+                [y_out, p_out, uD_out, qN_out, uDir_out,
+                 muL_out, muU_out, vL_out, vU_out,
+                 target_zone, control_zone_dist, constraint_zone, omega_qn, omega_qd],
+                t
+            )
 
     if rank == 0:
         logger.info(f"Saved: {pvd_path}")
