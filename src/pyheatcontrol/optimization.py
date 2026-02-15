@@ -803,6 +803,47 @@ def optimization_time_dependent(args):
         Y_final_all,
         T_ref,
     )
+    # ============================================================
+    # L2 error vs time on Omega_c (FINAL trajectory only)
+    # writes: l2_error_Omegac.dat
+    # ============================================================
+    from dolfinx.fem import form, assemble_scalar
+
+    dx_err = ufl.Measure("dx", domain=domain)
+    X = ufl.SpatialCoordinate(domain)
+
+    # Usa la prima target zone come Omega_c
+    marker_err = solver.target_markers[0]
+
+    # indicatrice cellwise su DG0 (una volta sola)
+    V0_err = solver.Vc
+    chi_err = Function(V0_err)
+    nloc_err = V0_err.dofmap.index_map.size_local
+    chi_err.x.array[:nloc_err] = marker_err.astype(PETSc.ScalarType)
+    chi_err.x.scatter_forward()
+
+    if rank == 0:
+        f_err = open("l2_error_Omegac.dat", "w")
+        f_err.write("# t   L2_Omegac\n")
+    else:
+        f_err = None
+
+    for m, Tm in enumerate(Y_final_all):  # Nt = num_steps+1
+        t = m * dt
+        r_expr = (1.0 - X[1]) * ufl.sin(X[0] - t)
+        e_expr = r_expr - Tm
+
+        val_loc = assemble_scalar(form((e_expr * e_expr) * chi_err * dx_err))
+        val = comm.allreduce(val_loc, op=MPI.SUM)
+        l2 = float(np.sqrt(val))
+
+        if rank == 0:
+            f_err.write(f"{t:.16e} {l2:.16e}\n")
+
+    if rank == 0:
+        f_err.close()
+        print("Wrote: l2_error_Omegac.dat")
+    #========================================================================
     n_ctrl_total = (
         solver.n_ctrl_dirichlet + solver.n_ctrl_neumann + solver.n_ctrl_distributed
     )
