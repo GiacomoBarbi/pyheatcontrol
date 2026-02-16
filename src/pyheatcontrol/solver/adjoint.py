@@ -59,6 +59,10 @@ def solve_adjoint_impl(self, Y_all, T_ref):
                 tracking += (
                     self.alpha_track * w * self.dt * (y_ph - T_ref_ph) * chi_t * v * dx
                 )
+            for ds_b in self.target_boundary_ds:
+                tracking += (
+                    self.alpha_track * w * self.dt * (y_ph - T_ref_ph) * v * ds_b
+                )
 
         # state-constraint forcing
         tracking += (-w) * muL_ph * self.chi_sc_cell * v * dx

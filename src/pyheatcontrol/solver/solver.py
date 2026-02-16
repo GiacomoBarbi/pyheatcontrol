@@ -44,6 +44,7 @@ class TimeDepHeatSolver:
         control_boundary_neumann,
         control_distributed_boxes,
         target_boxes,
+        target_boundaries,
         constraint_boxes,
         L,
         H,
@@ -439,6 +440,19 @@ class TimeDepHeatSolver:
             self.chi_targets.append(chi)
 
         # -------------------------
+        # Target boundaries (for boundary tracking)
+        # -------------------------
+        self.target_boundaries = target_boundaries
+        self.target_boundary_ds = []
+        self.target_boundary_tags = []
+        for i, (side, tmin, tmax) in enumerate(target_boundaries):
+            marker_id = 100 + i  # unique marker
+            facet_tags_i, _ = create_boundary_facet_tags(domain, [(side, tmin, tmax)], L, H, marker_id)
+            self.target_boundary_tags.append(facet_tags_i)
+            ds_i = ufl.Measure("ds", domain=domain, subdomain_data=facet_tags_i)(marker_id)
+            self.target_boundary_ds.append(ds_i)
+
+        # -------------------------
         # State constraints (SEPARATE from targets)
         # -------------------------
         self.constraint_markers = []
@@ -679,6 +693,17 @@ class TimeDepHeatSolver:
             )
             self._tracking_forms.append(form(ufl_form))
 
+        # Tracking forms for boundary targets
+        self._tracking_boundary_forms = []
+        for ds_b in self.target_boundary_ds:
+            ufl_form = (
+                0.5
+                * self.alpha_track
+                * (self._T_placeholder - self._T_ref_placeholder) ** 2
+                * ds_b
+            )
+            self._tracking_boundary_forms.append(form(ufl_form))
+
         self._cost_forms_initialized = True
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -802,6 +827,8 @@ class TimeDepHeatSolver:
                     self._T_ref_placeholder.x.scatter_forward()
 
                 for compiled_form in self._tracking_forms:
+                    val_step += assemble_scalar(compiled_form)
+                for compiled_form in self._tracking_boundary_forms:
                     val_step += assemble_scalar(compiled_form)
 
             val_step *= weight * self.dt

@@ -174,6 +174,7 @@ def optimization_time_dependent(args):
     dirichlet_bcs = [parse_dirichlet_bc(s) for s in args.dirichlet_bc]
     dirichlet_disturbances = [parse_dirichlet_disturbance(s) for s in args.dirichlet_disturbance]
     target_boxes = [parse_box(s) for s in args.target_zone]
+    target_boundaries = [parse_boundary_segment(s) for s in args.target_boundary]
     constraint_boxes = [parse_box(s) for s in args.constraint_zone]
     neumann_by_side = {"x0": [], "xL": [], "y0": [], "yL": []}
     for side, tmin, tmax in ctrl_neumann:
@@ -302,6 +303,7 @@ def optimization_time_dependent(args):
         ctrl_neumann,
         ctrl_distributed_boxes,
         target_boxes,
+        target_boundaries,
         constraint_boxes,
         L,
         H,
@@ -868,37 +870,62 @@ def optimization_time_dependent(args):
     dx_err = ufl.Measure("dx", domain=domain)
     X = ufl.SpatialCoordinate(domain)
 
-    # Usa la prima target zone come Omega_c
-    marker_err = solver.target_markers[0]
+    # Check if we have target zones or target boundaries
+    has_target_zone = len(solver.target_markers) > 0
+    has_target_boundary = len(solver.target_boundary_ds) > 0
 
-    # indicatrice cellwise su DG0 (una volta sola)
-    V0_err = solver.Vc
-    chi_err = Function(V0_err)
-    nloc_err = V0_err.dofmap.index_map.size_local
-    chi_err.x.array[:nloc_err] = marker_err.astype(PETSc.ScalarType)
-    chi_err.x.scatter_forward()
+    if has_target_zone:
+        # Usa la prima target zone come Omega_c
+        marker_err = solver.target_markers[0]
 
-    if rank == 0:
-        f_err = open("l2_error_Omegac.dat", "w")
-        f_err.write("# t   L2_Omegac\n")
-    else:
-        f_err = None
-
-    for m, Tm in enumerate(Y_final_all):  # Nt = num_steps+1
-        t = m * dt
-        r_expr = (1.0 - X[1]) * ufl.sin(X[0] - t)
-        e_expr = r_expr - Tm
-
-        val_loc = assemble_scalar(form((e_expr * e_expr) * chi_err * dx_err))
-        val = comm.allreduce(val_loc, op=MPI.SUM)
-        l2 = float(np.sqrt(val))
+        # indicatrice cellwise su DG0 (una volta sola)
+        V0_err = solver.Vc
+        chi_err = Function(V0_err)
+        nloc_err = V0_err.dofmap.index_map.size_local
+        chi_err.x.array[:nloc_err] = marker_err.astype(PETSc.ScalarType)
+        chi_err.x.scatter_forward()
 
         if rank == 0:
-            f_err.write(f"{t:.16e} {l2:.16e}\n")
+            f_err = open("l2_error_Omegac.dat", "w")
+            f_err.write("# t   L2_Omegac\n")
+        else:
+            f_err = None
 
-    if rank == 0:
-        f_err.close()
-        print("Wrote: l2_error_Omegac.dat")
+        for m, Tm in enumerate(Y_final_all):  # Nt = num_steps+1
+            t = m * dt
+            r_expr = (1.0 - X[1]) * ufl.sin(X[0] - t)
+            e_expr = r_expr - Tm
+
+            val_loc = assemble_scalar(form((e_expr * e_expr) * chi_err * dx_err))
+            val = comm.allreduce(val_loc, op=MPI.SUM)
+            l2 = float(np.sqrt(val))
+
+            if rank == 0:
+                f_err.write(f"{t:.16e} {l2:.16e}\n")
+
+        if rank == 0:
+            f_err.close()
+            print("Wrote: l2_error_Omegac.dat")
+
+    elif has_target_boundary:
+        ds_err = solver.target_boundary_ds[0]
+        if rank == 0:
+            f_err = open("l2_error_boundary.dat", "w")
+            f_err.write("# t   L2_boundary\n")
+        else:
+            f_err = None
+        for m, Tm in enumerate(Y_final_all):
+            t = m * dt
+            r_expr = (1.0 - X[1]) * ufl.sin(X[0] - t)
+            e_expr = r_expr - Tm
+            val_loc = assemble_scalar(form((e_expr * e_expr) * ds_err))
+            val = comm.allreduce(val_loc, op=MPI.SUM)
+            l2 = float(np.sqrt(val))
+            if rank == 0:
+                f_err.write(f"{t:.16e} {l2:.16e}\n")
+        if rank == 0:
+            f_err.close()
+            print("Wrote: l2_error_boundary.dat")
     #========================================================================
     n_ctrl_total = (
         solver.n_ctrl_dirichlet + solver.n_ctrl_neumann + solver.n_ctrl_distributed
@@ -1196,6 +1223,7 @@ def optimization_time_dependent(args):
             args,
             num_steps,
             target_boxes,
+        target_boundaries,
             ctrl_distributed_boxes,
         )
 

@@ -36,6 +36,7 @@ def build_parser():
 
     # Target zones
     parser.add_argument("--target-zone", action="append", default=[])
+    parser.add_argument("--target-boundary", action="append", default=[])
 
     # Optimization
     parser.add_argument("--alpha-track", type=float, default=1.0)

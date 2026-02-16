@@ -27,6 +27,7 @@ def save_visualization_output(
     args,
     num_steps,
     target_boxes,
+    target_boundaries,
     control_distributed_boxes,
 ):
     output_dir = args.output_dir
