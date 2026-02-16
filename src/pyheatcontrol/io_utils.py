@@ -289,13 +289,30 @@ def save_visualization_output(
             vL_out.x.scatter_forward()
             vU_out.x.scatter_forward()
 
-            # Write all fields at this timestep (single call = single file per timestep)
-            vtk.write_function(
-                [y_out, p_out, uD_out, qN_out, uDir_out,
-                 muL_out, muU_out, vL_out, vU_out,
-                 target_zone, control_zone_dist, constraint_zone, omega_qn, omega_qd],
-                t
-            )
+            # Build list of active fields only
+            fields_to_write = [y_out, p_out]  # Always write state and adjoint
+            
+            # Add control fields only if active
+            if getattr(solver, "n_ctrl_distributed", 0) > 0:
+                fields_to_write.append(uD_out)
+                fields_to_write.append(control_zone_dist)
+            if getattr(solver, "n_ctrl_neumann", 0) > 0:
+                fields_to_write.append(qN_out)
+                fields_to_write.append(omega_qn)
+            if getattr(solver, "n_ctrl_dirichlet", 0) > 0:
+                fields_to_write.append(uDir_out)
+                fields_to_write.append(omega_qd)
+            
+            # Add constraint fields only if constraints active
+            has_constraints = (hasattr(args, 'sc_lower') and args.sc_lower is not None) or                              (hasattr(args, 'sc_upper') and args.sc_upper is not None)
+            if has_constraints:
+                fields_to_write.extend([muL_out, muU_out, vL_out, vU_out, constraint_zone])
+            
+            # Always add target zone
+            fields_to_write.append(target_zone)
+            
+            # Write all active fields
+            vtk.write_function(fields_to_write, t)
 
     if rank == 0:
         logger.info(f"Saved: {pvd_path}")
