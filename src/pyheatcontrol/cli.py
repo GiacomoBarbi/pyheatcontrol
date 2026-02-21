@@ -28,6 +28,12 @@ def build_parser():
     # Control zones
     parser.add_argument("--control-boundary-dirichlet", action="append", default=[])
     parser.add_argument("--control-boundary-neumann", action="append", default=[])
+    parser.add_argument(
+        "--neumann-bc",
+        action="append",
+        default=[],
+        help="Prescribed Neumann flux k∂_n T = value: side,tmin,tmax,value (e.g. y0,0,1,0 for homogeneous)",
+    )
     parser.add_argument("--control-distributed", action="append", default=[])
     parser.add_argument("--dirichlet-bc", action="append", default=[])
     parser.add_argument("--dirichlet-disturbance", action="append", default=[])

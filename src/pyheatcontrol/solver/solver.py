@@ -51,6 +51,7 @@ class TimeDepHeatSolver:
         robin_segments,
         dirichlet_bcs,
         dirichlet_disturbances,
+        neumann_bcs,
         alpha_track,
         alpha_u,
         gamma_u,
@@ -262,6 +263,54 @@ class TimeDepHeatSolver:
             q.x.array[:] = 0.0
             q.x.scatter_forward()
             self.q_neumann_funcs.append(q)
+
+        # -------------------------
+        # Prescribed (non-homogeneous) Neumann BC: k ∂_n T = g
+        # -------------------------
+        self.neumann_bcs = neumann_bcs if neumann_bcs is not None else []
+        self.n_neumann_bc = len(self.neumann_bcs)
+        self.neumann_prescribed_marker_ids = []
+        self.neumann_prescribed_constants = []
+        self.ds_neumann_prescribed = None
+        if self.n_neumann_bc > 0:
+            all_facets_prescribed = []
+            all_values_prescribed = []
+            for i, (side, tmin, tmax, value) in enumerate(self.neumann_bcs):
+                marker_id = 50 + i  # avoid clash with control (1,2,...) and target (100+)
+                facet_tags_i, _ = create_boundary_facet_tags(
+                    domain, [(side, tmin, tmax)], L, H, marker_id
+                )
+                self.neumann_prescribed_marker_ids.append(marker_id)
+                self.neumann_prescribed_constants.append(
+                    Constant(domain, PETSc.ScalarType(value))
+                )
+                all_facets_prescribed.append(facet_tags_i.indices.astype(np.int32))
+                all_values_prescribed.append(facet_tags_i.values.astype(np.int32))
+            facets_p = np.hstack(all_facets_prescribed).astype(np.int32)
+            values_p = np.hstack(all_values_prescribed).astype(np.int32)
+            order_p = np.argsort(facets_p, kind="mergesort")
+            facets_p = facets_p[order_p]
+            values_p = values_p[order_p]
+            unique_facets_rev_p, first_idx_rev_p = np.unique(
+                facets_p[::-1], return_index=True
+            )
+            last_idx_p = (len(facets_p) - 1) - first_idx_rev_p
+            last_idx_sorted_p = np.sort(last_idx_p)
+            facets_up = facets_p[last_idx_sorted_p]
+            values_up = values_p[last_idx_sorted_p]
+            self.neumann_prescribed_facet_tags = meshtags(
+                domain, fdim, facets_up, values_up
+            )
+            self.ds_neumann_prescribed = ufl.Measure(
+                "ds",
+                domain=domain,
+                subdomain_data=self.neumann_prescribed_facet_tags,
+            )
+            if domain.comm.rank == 0:
+                logger.debug(
+                    f"Prescribed Neumann BC: {self.n_neumann_bc} segment(s), "
+                    f"marker ids {self.neumann_prescribed_marker_ids}"
+                )
 
         # Debug: matrix norms (norm() is MPI collective)
         

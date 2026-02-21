@@ -33,6 +33,21 @@ def parse_robin_segment(s: str):
         raise ValueError(f"side must be one of x0/xL/y0/yL (got: {side})")
     return (side, tmin, tmax, a)
 
+def parse_neumann_bc(s: str):
+    """Parse prescribed (non-homogeneous) Neumann BC: side,tmin,tmax,value.
+    Flux k ∂_n T = value on the segment. value=0 gives homogeneous Neumann."""
+    parts = s.split(",")
+    if len(parts) != 4:
+        raise ValueError(f"Neumann BC requires: side,tmin,tmax,value (got: {s})")
+    side = parts[0].strip()
+    tmin = float(parts[1])
+    tmax = float(parts[2])
+    value = float(parts[3])
+    if side not in ["x0", "xL", "y0", "yL"]:
+        raise ValueError(f"side must be one of x0/xL/y0/yL (got: {side})")
+    return (side, tmin, tmax, value)
+
+
 def parse_dirichlet_bc(s: str):
     """Parse Dirichlet BC segment: side,tmin,tmax,value"""
     parts = s.split(",")

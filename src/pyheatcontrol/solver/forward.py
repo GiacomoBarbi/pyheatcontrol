@@ -80,9 +80,16 @@ def solve_forward_impl(
     for i in range(self.n_ctrl_distributed):
         L_rhs_ufl += u_dist_cur[i] * self.chi_distributed_V[i] * v * dx
 
-    # Neumann boundary term
+    # Neumann boundary term (control)
     for i, mid in enumerate(self.neumann_marker_ids):
         L_rhs_ufl += self.q_neumann_funcs[i] * v * self.ds_neumann(mid)
+
+    # Prescribed (non-homogeneous) Neumann: k ∂_n T = g
+    if getattr(self, "n_neumann_bc", 0) > 0:
+        for i in range(self.n_neumann_bc):
+            mid = self.neumann_prescribed_marker_ids[i]
+            g_i = self.neumann_prescribed_constants[i]
+            L_rhs_ufl += g_i * v * self.ds_neumann_prescribed(mid)
 
     # Precompile RHS form
     rhs_form = form(L_rhs_ufl)

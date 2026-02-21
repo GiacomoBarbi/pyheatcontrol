@@ -4,7 +4,7 @@ import ufl
 from mpi4py import MPI
 from petsc4py import PETSc
 from dolfinx.fem import Function, functionspace
-from pyheatcontrol.parsing_utils import parse_box, parse_boundary_segment, parse_robin_segment, parse_dirichlet_bc, parse_dirichlet_disturbance
+from pyheatcontrol.parsing_utils import parse_box, parse_boundary_segment, parse_robin_segment, parse_dirichlet_bc, parse_dirichlet_disturbance, parse_neumann_bc
 from pyheatcontrol.mesh_utils import create_mesh
 from pyheatcontrol.io_utils import save_visualization_output
 from pyheatcontrol.solver import TimeDepHeatSolver
@@ -174,6 +174,14 @@ def optimization_time_dependent(args):
     robin_segments = [parse_robin_segment(s) for s in args.robin_boundary]
     dirichlet_bcs = [parse_dirichlet_bc(s) for s in args.dirichlet_bc]
     dirichlet_disturbances = [parse_dirichlet_disturbance(s) for s in args.dirichlet_disturbance]
+    neumann_bcs = [parse_neumann_bc(s) for s in getattr(args, "neumann_bc", []) or []]
+    # Prescribed Neumann must not overlap with control Neumann (same segment)
+    ctrl_neumann_set = {(s, t0, t1) for s, t0, t1 in ctrl_neumann}
+    for side, tmin, tmax, val in neumann_bcs:
+        if (side, tmin, tmax) in ctrl_neumann_set:
+            raise ValueError(
+                f"Prescribed Neumann segment ({side},{tmin},{tmax}) cannot be the same as a control Neumann segment."
+            )
     target_boxes = [parse_box(s) for s in args.target_zone]
     target_boundaries = [parse_boundary_segment(s) for s in args.target_boundary]
     constraint_boxes = [parse_box(s) for s in args.constraint_zone]
@@ -215,6 +223,9 @@ def optimization_time_dependent(args):
         logger.info(f"  Boundary Neumann: {len(ctrl_neumann)}")
         for i, seg in enumerate(ctrl_neumann):
             logger.info(f"    {i + 1}. {seg}")
+        logger.info(f"  Prescribed Neumann (k∂_n T=g): {len(neumann_bcs)}")
+        for i, (side, t0, t1, g) in enumerate(neumann_bcs):
+            logger.info(f"    {i + 1}. ({side},{t0},{t1}) g={g}")
         logger.info(f"  Distributed boxes: {len(ctrl_distributed_boxes)}")
         for i, box in enumerate(ctrl_distributed_boxes):
             logger.info(f"    {i + 1}. {box}")
@@ -314,6 +325,7 @@ def optimization_time_dependent(args):
         robin_segments,
         dirichlet_bcs,
         dirichlet_disturbances,
+        neumann_bcs,
         args.alpha_track,
         args.alpha_u,
         args.gamma_u,
@@ -500,6 +512,21 @@ def optimization_time_dependent(args):
 
     # Moreau-Yosida loop
     for sc_iter in range(outer_maxit):
+
+        # When inner_maxit=0, do one forward so Y_all/J are defined for SC and final output
+        if args.inner_maxit == 0:
+            Y_all = solver.solve_forward(
+                u_neumann_funcs_time,
+                u_distributed_funcs_time,
+                u_dirichlet_funcs_time,
+            )
+            J, J_track, J_reg_L2, J_reg_H1, J_penalty = solver.compute_cost(
+                u_distributed_funcs_time,
+                u_neumann_funcs_time,
+                u_dirichlet_funcs_time,
+                Y_all,
+                T_ref,
+            )
 
         # Inner gradient descent loop
         for inner_iter in range(args.inner_maxit):
