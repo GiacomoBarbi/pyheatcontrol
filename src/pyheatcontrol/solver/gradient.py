@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from mpi4py import MPI
 from petsc4py import PETSc
@@ -235,13 +236,12 @@ def compute_gradient_impl(
             self.ksp_dirichlet[i].solve(b_total, gD.x.petsc_vec)
             gD.x.scatter_forward()
 
-            if m == 0 or m == self.num_steps - 1:
+            if (m == 0 or m == self.num_steps - 1) and logger.isEnabledFor(logging.DEBUG):
                 reg_type = (
                     "L2"
                     if self.dirichlet_spatial_reg == "L2"
                     else f"H1(α={self.alpha_u:.1e},β={self.beta_u:.1e})"
                 )
-
                 vals = gD.x.array[dofs_i]
                 if vals.size > 0:
                     local_min = float(vals.min())
@@ -249,10 +249,8 @@ def compute_gradient_impl(
                 else:
                     local_min = np.inf
                     local_max = -np.inf
-
                 gmin = self.domain.comm.allreduce(local_min, op=MPI.MIN)
                 gmax = self.domain.comm.allreduce(local_max, op=MPI.MAX)
-
                 if self.domain.comm.rank == 0:
                     logger.debug(
                         f"GRAD-DIRICHLET-{reg_type} m={m} on ΓD min/max: {gmin:.6e}, {gmax:.6e}"
@@ -261,20 +259,16 @@ def compute_gradient_impl(
             # b_total.norm() is MPI collective - all ranks must call
             b_norm = float(b_total.norm()) if m == 0 else 0.0
             comm = self.domain.comm
-            vals_u = uD_current.x.array[dofs_i]
-            vals_g = gD.x.array[dofs_i]
-
-            # local sums + counts (safe if empty)
-            sum_u = float(vals_u.sum()) if vals_u.size else 0.0
-            sum_g = float(vals_g.sum()) if vals_g.size else 0.0
-            cnt   = int(vals_u.size)
-
-            # global sums + counts
-            sum_u_g = comm.allreduce(sum_u, op=MPI.SUM)
-            sum_g_g = comm.allreduce(sum_g, op=MPI.SUM)
-            cnt_g   = comm.allreduce(cnt,   op=MPI.SUM)
-
-            if comm.rank == 0 and m == 0:
+            if logger.isEnabledFor(logging.DEBUG) and m == 0:
+                vals_u = uD_current.x.array[dofs_i]
+                vals_g = gD.x.array[dofs_i]
+                sum_u = float(vals_u.sum()) if vals_u.size else 0.0
+                sum_g = float(vals_g.sum()) if vals_g.size else 0.0
+                cnt   = int(vals_u.size)
+                sum_u_g = comm.allreduce(sum_u, op=MPI.SUM)
+                sum_g_g = comm.allreduce(sum_g, op=MPI.SUM)
+                cnt_g   = comm.allreduce(cnt,   op=MPI.SUM)
+            if comm.rank == 0 and m == 0 and logger.isEnabledFor(logging.DEBUG):
                 if cnt_g > 0:
                     mean_u = sum_u_g / cnt_g
                     mean_g = sum_g_g / cnt_g
@@ -286,7 +280,6 @@ def compute_gradient_impl(
                     )
                 else:
                     logger.debug(f"DIRICHLET-GRAD m={m}: ΓD has 0 dofs globally (check markers/segment).")
-
 
         # ---- Neumann controls (P2), gradient with proper L2(Γ) integral ----
         for i in range(self.n_ctrl_neumann):
@@ -331,7 +324,7 @@ def compute_gradient_impl(
             self.ksp_neumann[i].solve(b_total, gq.x.petsc_vec)
             gq.x.scatter_forward()
 
-            if m == 0 or m == self.num_steps - 1:
+            if (m == 0 or m == self.num_steps - 1) and logger.isEnabledFor(logging.DEBUG):
                 vals = gq.x.array[dofs_i]
                 if vals.size > 0:
                     local_min = float(vals.min())
@@ -339,10 +332,8 @@ def compute_gradient_impl(
                 else:
                     local_min = np.inf
                     local_max = -np.inf
-
                 gmin = self.domain.comm.allreduce(local_min, op=MPI.MIN)
                 gmax = self.domain.comm.allreduce(local_max, op=MPI.MAX)
-
                 if self.domain.comm.rank == 0:
                     logger.debug(f"GRAD-NEUMANN m={m} on Γ min/max: {gmin:.6e}, {gmax:.6e}")
 

@@ -1,3 +1,4 @@
+import logging
 from petsc4py import PETSc
 from ufl import dx, TestFunction
 import numpy as np
@@ -137,13 +138,13 @@ def solve_forward_impl(
             uD_bc[i].x.array[dofs_i] = uD_time.x.array[dofs_i]
             uD_bc[i].x.scatter_forward()
 
-            if step == 0 and i == 0:
+            if step == 0 and i == 0 and logger.isEnabledFor(logging.DEBUG):
                 comm = self.domain.comm
                 dofs0 = self.dirichlet_dofs[0]
                 vals0 = uD_bc[0].x.array[dofs0]
-                gmin, gmax, nloc = _global_minmax(self.domain.comm, vals0)
-                nglob = self.domain.comm.allreduce(int(nloc), op=MPI.SUM)
-                if self.domain.comm.rank == 0:
+                gmin, gmax, nloc = _global_minmax(comm, vals0)
+                nglob = comm.allreduce(int(nloc), op=MPI.SUM)
+                if comm.rank == 0:
                     logger.debug(f"Dirichlet ΓD dofs: local(rank0)={nloc}, global={nglob}")
                     logger.debug(f"uD_bc[0] on ΓD global min/max = {gmin:.6e}, {gmax:.6e}")
 
@@ -164,11 +165,8 @@ def solve_forward_impl(
             self.q_neumann_funcs[i].x.array[dofs_i] = q_time.x.array[dofs_i]
             self.q_neumann_funcs[i].x.scatter_forward()
 
-            # DEBUG (MPI-safe)
-            if step == 0 and i == 0:
+            if step == 0 and i == 0 and logger.isEnabledFor(logging.DEBUG):
                 comm = self.domain.comm
-
-                # --- global min/max (local slice + allreduce) ---
                 a_loc = self.q_neumann_funcs[i].x.array
                 if a_loc.size > 0:
                     local_min = float(a_loc.min())
@@ -176,11 +174,8 @@ def solve_forward_impl(
                 else:
                     local_min = np.inf
                     local_max = -np.inf
-
                 gmin = comm.allreduce(local_min, op=MPI.MIN)
                 gmax = comm.allreduce(local_max, op=MPI.MAX)
-
-                # --- boundary min/max on Γ (local dofs slice + allreduce) ---
                 b_loc = self.q_neumann_funcs[i].x.array[dofs_i]
                 if b_loc.size > 0:
                     local_bmin = float(b_loc.min())
@@ -188,10 +183,8 @@ def solve_forward_impl(
                 else:
                     local_bmin = np.inf
                     local_bmax = -np.inf
-
                 gbmin = comm.allreduce(local_bmin, op=MPI.MIN)
                 gbmax = comm.allreduce(local_bmax, op=MPI.MAX)
-
                 if comm.rank == 0:
                     logger.debug(
                         f"step={step}, q_func min/max (global) = "
@@ -202,7 +195,7 @@ def solve_forward_impl(
                         f"{gbmin:.6e}, {gbmax:.6e}"
                     )
         
-        if step == 0 and self.n_ctrl_neumann > 0:
+        if step == 0 and self.n_ctrl_neumann > 0 and logger.isEnabledFor(logging.DEBUG):
             comm = self.domain.comm
 
             dofs0 = self.neumann_dofs[0]
@@ -271,21 +264,15 @@ def solve_forward_impl(
         self.ksp.solve(b, T.x.petsc_vec)
         T.x.scatter_forward()
 
-        if step == self.num_steps - 1:
+        if step == self.num_steps - 1 and logger.isEnabledFor(logging.DEBUG):
             comm = self.domain.comm
-
-            # Global min/max of T (true global)
             gminT, gmaxT, _ = _global_minmax(comm, T.x.array)
             if comm.rank == 0:
                 logger.debug(f"T global min/max: {gminT:.12e} {gmaxT:.12e}")
-
             if self.n_ctrl_dirichlet > 0:
                 dofsD = self.dirichlet_dofs[0]
-
-                # keep only owned dofs (avoid ghost indices)
                 nloc = self.V.dofmap.index_map.size_local
                 dofsD_owned = dofsD[dofsD < nloc]
-
                 vals = T.x.array[dofsD_owned]
                 gmin, gmax, _ = _global_minmax(comm, vals)
                 if comm.rank == 0:

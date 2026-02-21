@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import math
 import ufl
@@ -331,6 +332,8 @@ def optimization_time_dependent(args):
         args.gamma_u,
         args.beta_u,
         args.dirichlet_spatial_reg,
+        getattr(args, "ksp_type", "gmres"),
+        getattr(args, "ksp_rtol", 1e-10),
     )
     solver.T_ref_values = T_ref_values
 
@@ -366,37 +369,32 @@ def optimization_time_dependent(args):
         uD_test = u_dirichlet_funcs_time[0][0]
         dofs_test = solver.dirichlet_dofs[0]
 
-        # Global min/max over all DOFs
-        a_loc = uD_test.x.array
-        if a_loc.size > 0:
-            local_min = float(a_loc.min())
-            local_max = float(a_loc.max())
-        else:
-            local_min = np.inf
-            local_max = -np.inf
-
-        gmin = comm.allreduce(local_min, op=MPI.MIN)
-        gmax = comm.allreduce(local_max, op=MPI.MAX)
-
-        # Global min/max over boundary DOFs (ΓD)
-        b_loc = uD_test.x.array[dofs_test]
-        if b_loc.size > 0:
-            local_bmin = float(b_loc.min())
-            local_bmax = float(b_loc.max())
-        else:
-            local_bmin = np.inf
-            local_bmax = -np.inf
-
-        gbmin = comm.allreduce(local_bmin, op=MPI.MIN)
-        gbmax = comm.allreduce(local_bmax, op=MPI.MAX)
-
-        if rank == 0:
-            logger.debug(
-                f"uD_Dirichlet(t=0) global min/max = {gmin:.6e}, {gmax:.6e}"
-            )
-            logger.debug(
-                f"uD_Dirichlet(t=0) on ΓD min/max = {gbmin:.6e}, {gbmax:.6e}"
-            )
+        if logger.isEnabledFor(logging.DEBUG):
+            a_loc = uD_test.x.array
+            if a_loc.size > 0:
+                local_min = float(a_loc.min())
+                local_max = float(a_loc.max())
+            else:
+                local_min = np.inf
+                local_max = -np.inf
+            gmin = comm.allreduce(local_min, op=MPI.MIN)
+            gmax = comm.allreduce(local_max, op=MPI.MAX)
+            b_loc = uD_test.x.array[dofs_test]
+            if b_loc.size > 0:
+                local_bmin = float(b_loc.min())
+                local_bmax = float(b_loc.max())
+            else:
+                local_bmin = np.inf
+                local_bmax = -np.inf
+            gbmin = comm.allreduce(local_bmin, op=MPI.MIN)
+            gbmax = comm.allreduce(local_bmax, op=MPI.MAX)
+            if rank == 0:
+                logger.debug(
+                    f"uD_Dirichlet(t=0) global min/max = {gmin:.6e}, {gmax:.6e}"
+                )
+                logger.debug(
+                    f"uD_Dirichlet(t=0) on ΓD min/max = {gbmin:.6e}, {gbmax:.6e}"
+                )
 
 
     # Distributed control: space-time Function (P2 in space)
@@ -413,8 +411,7 @@ def optimization_time_dependent(args):
             row.append(uD)
         u_distributed_funcs_time.append(row)
 
-    # Debug: verify distributed control initialization (MPI-safe)
-    if solver.n_ctrl_distributed > 0:
+    if solver.n_ctrl_distributed > 0 and logger.isEnabledFor(logging.DEBUG):
         uD_test = u_distributed_funcs_time[0][0]
         dofs_test = solver.distributed_dofs[0]
         a_loc = uD_test.x.array
@@ -972,71 +969,57 @@ def optimization_time_dependent(args):
         comm = domain.comm
         dx = ufl.Measure("dx", domain=domain)
 
-        if rank == 0:
-            logger.debug("\n" + "=" * 70)
-            logger.debug("H1 TEMPORAL REGULARIZATION CHECK (DISTRIBUTED)")
-            logger.debug("=" * 70)
-            logger.debug(
-                f"gamma_u = {solver.gamma_u:.6e}, dt = {solver.dt:.6e}, num_steps = {num_steps}"
-            )
-
-        for j in range(solver.n_ctrl_distributed):
-            chiV = solver.chi_distributed_V[j]
-
-            # Global measure of Ωc
-            meas_loc = assemble_scalar(form(chiV * dx))
-            meas = comm.allreduce(meas_loc, op=MPI.SUM)
-
-            # Global denominator
-            den_loc = assemble_scalar(form(chiV * dx))
-            den = comm.allreduce(den_loc, op=MPI.SUM)
-
+        if logger.isEnabledFor(logging.DEBUG):
             if rank == 0:
-                logger.debug(f"\nH1t-DIST zone {j}")
-                logger.debug(f"  meas(Ωc) ≈ {float(meas):.6e}")
-
-            rough2 = 0.0
-            max_step_L2 = 0.0
-
-            # Sample spatial mean over Ωc (10 points)
-            sample_means = []
-            stride = max(1, (num_steps - 1) // 10)
-            sample_idx = list(range(0, num_steps, stride))
-            if (num_steps - 1) not in sample_idx:
-                sample_idx.append(num_steps - 1)
-
-            # Spatial mean over Ωc (with global numerator)
-            for m in sample_idx:
-                um = u_distributed_funcs_time[m][j]
-                num_loc = assemble_scalar(form(um * chiV * dx))
-                num = comm.allreduce(num_loc, op=MPI.SUM)
-                mean_um = float(num / den) if den > 1e-14 else float("nan")
-                sample_means.append((m * solver.dt, mean_um))
-
-            # L2 roughness over Ωc (step by step with allreduce)
-            for m in range(num_steps - 1):
-                u0 = u_distributed_funcs_time[m][j]
-                u1 = u_distributed_funcs_time[m + 1][j]
-                step_loc = assemble_scalar(form(((u1 - u0) ** 2) * chiV * dx))
-                step = float(comm.allreduce(step_loc, op=MPI.SUM))
-                rough2 += step
-                max_step_L2 = max(max_step_L2, step)
-
-            pred_JH1 = 0.5 * solver.gamma_u / solver.dt * rough2
-            rough = math.sqrt(rough2)
-            avg_step = math.sqrt(rough2 / max(1, num_steps - 1))
-
-            if rank == 0:
-                logger.debug(f"\nH1t-DIST zone {j}")
-                logger.debug(f"  predicted J_H1 = {pred_JH1:.6e}")
-                logger.debug(f"  roughness sqrt(sum ||Δu||^2) = {rough:.6e}")
+                logger.debug("\n" + "=" * 70)
+                logger.debug("H1 TEMPORAL REGULARIZATION CHECK (DISTRIBUTED)")
+                logger.debug("=" * 70)
                 logger.debug(
-                    f"  avg step L2-norm over Ωc (sqrt(mean ||Δu||^2)) = {avg_step:.6e}"
+                    f"gamma_u = {solver.gamma_u:.6e}, dt = {solver.dt:.6e}, num_steps = {num_steps}"
                 )
-                logger.debug(f"  max step ||Δu||^2 over Ωc = {max_step_L2:.6e}")
-                logger.debug("  sampled mean(u) over Ωc:")
-                for t, mu in sample_means:
-                    logger.debug(f"    t={t:8.1f}s  mean(u)={mu:+.6e}")
+            for j in range(solver.n_ctrl_distributed):
+                chiV = solver.chi_distributed_V[j]
+                meas_loc = assemble_scalar(form(chiV * dx))
+                meas = comm.allreduce(meas_loc, op=MPI.SUM)
+                den_loc = assemble_scalar(form(chiV * dx))
+                den = comm.allreduce(den_loc, op=MPI.SUM)
+                if rank == 0:
+                    logger.debug(f"\nH1t-DIST zone {j}")
+                    logger.debug(f"  meas(Ωc) ≈ {float(meas):.6e}")
+                rough2 = 0.0
+                max_step_L2 = 0.0
+                sample_means = []
+                stride = max(1, (num_steps - 1) // 10)
+                sample_idx = list(range(0, num_steps, stride))
+                if (num_steps - 1) not in sample_idx:
+                    sample_idx.append(num_steps - 1)
+                for m in sample_idx:
+                    um = u_distributed_funcs_time[m][j]
+                    num_loc = assemble_scalar(form(um * chiV * dx))
+                    num = comm.allreduce(num_loc, op=MPI.SUM)
+                    mean_um = float(num / den) if den > 1e-14 else float("nan")
+                    sample_means.append((m * solver.dt, mean_um))
+                for m in range(num_steps - 1):
+                    u0 = u_distributed_funcs_time[m][j]
+                    u1 = u_distributed_funcs_time[m + 1][j]
+                    step_loc = assemble_scalar(form(((u1 - u0) ** 2) * chiV * dx))
+                    step = float(comm.allreduce(step_loc, op=MPI.SUM))
+                    rough2 += step
+                    max_step_L2 = max(max_step_L2, step)
+                pred_JH1 = 0.5 * solver.gamma_u / solver.dt * rough2
+                rough = math.sqrt(rough2)
+                avg_step = math.sqrt(rough2 / max(1, num_steps - 1))
+                if rank == 0:
+                    logger.debug(f"\nH1t-DIST zone {j}")
+                    logger.debug(f"  predicted J_H1 = {pred_JH1:.6e}")
+                    logger.debug(f"  roughness sqrt(sum ||Δu||^2) = {rough:.6e}")
+                    logger.debug(
+                        f"  avg step L2-norm over Ωc (sqrt(mean ||Δu||^2)) = {avg_step:.6e}"
+                    )
+                    logger.debug(f"  max step ||Δu||^2 over Ωc = {max_step_L2:.6e}")
+                    logger.debug("  sampled mean(u) over Ωc:")
+                    for t, mu in sample_means:
+                        logger.debug(f"    t={t:8.1f}s  mean(u)={mu:+.6e}")
 
         # Control statistics
         for ic in range(n_ctrl_total):

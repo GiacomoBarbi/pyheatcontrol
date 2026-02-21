@@ -1,5 +1,6 @@
 # solver.py
 
+import logging
 import numpy as np
 from mpi4py import MPI
 from petsc4py import PETSc
@@ -57,6 +58,8 @@ class TimeDepHeatSolver:
         gamma_u,
         beta_u,
         dirichlet_spatial_reg,
+        ksp_type="gmres",
+        ksp_rtol=1e-10,
     ):
 
         self.domain = domain
@@ -100,7 +103,7 @@ class TimeDepHeatSolver:
 
         self._T_cell = Function(self.Vc)  # DG0
 
-        if self.domain.comm.rank == 0:
+        if self.domain.comm.rank == 0 and logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"constraint_boxes received = {constraint_boxes}")
 
         # -------------------------
@@ -333,7 +336,7 @@ class TimeDepHeatSolver:
         # Dirichlet DOFs restricted to ΓD (reuse from bc_dofs_list_dirichlet)
         self.dirichlet_dofs = self.bc_dofs_list_dirichlet
 
-        if self.n_ctrl_dirichlet > 0:
+        if self.n_ctrl_dirichlet > 0 and logger.isEnabledFor(logging.DEBUG):
             comm = self.domain.comm
             for i, dofs in enumerate(self.dirichlet_dofs):
                 nloc = int(len(dofs))
@@ -529,17 +532,15 @@ class TimeDepHeatSolver:
         self.chi_sc = Function(self.V0)
         self.chi_sc.interpolate(chi_sc_dg0)
 
-        # assemble_scalar returns LOCAL contribution -> must allreduce to get GLOBAL
-        mt_loc = [assemble_scalar(form(chi * dx)) for chi in self.chi_targets]
-        mt = [self.domain.comm.allreduce(v, op=MPI.SUM) for v in mt_loc]
-
-        msc_loc = assemble_scalar(form(self.chi_sc * dx))
-        msc = self.domain.comm.allreduce(msc_loc, op=MPI.SUM)
-
-        if self.domain.comm.rank == 0:
-            logger.debug(f"Constraint zone: {int(np.sum(self.sc_marker))} cells marked")
-            logger.debug(f"meas(targets) = {mt}")
-            logger.debug(f"meas(constraint) = {float(msc)}")
+        if logger.isEnabledFor(logging.DEBUG):
+            mt_loc = [assemble_scalar(form(chi * dx)) for chi in self.chi_targets]
+            mt = [self.domain.comm.allreduce(v, op=MPI.SUM) for v in mt_loc]
+            msc_loc = assemble_scalar(form(self.chi_sc * dx))
+            msc = self.domain.comm.allreduce(msc_loc, op=MPI.SUM)
+            if self.domain.comm.rank == 0:
+                logger.debug(f"Constraint zone: {int(np.sum(self.sc_marker))} cells marked")
+                logger.debug(f"meas(targets) = {mt}")
+                logger.debug(f"meas(constraint) = {float(msc)}")
 
         # Multipliers are now time-dependent (one per time step)
         # Will be initialized properly when sc_start_time/sc_end_time are known
@@ -635,10 +636,10 @@ class TimeDepHeatSolver:
         self.a_state_compiled = form(self.a_state)
         self.a_adjoint_compiled = form(self.a_adjoint)
         self.ksp = PETSc.KSP().create(domain.comm)
-        self.ksp.setType("gmres")
+        self.ksp.setType(ksp_type)
         self.ksp.getPC().setType("hypre")
         self.ksp.getPC().setHYPREType("boomeramg")
-        self.ksp.setTolerances(rtol=1e-10)
+        self.ksp.setTolerances(rtol=float(ksp_rtol))
 
         # -------------------------------------------------
         # Riesz map for Neumann gradient: M g = b

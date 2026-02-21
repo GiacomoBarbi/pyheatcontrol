@@ -81,6 +81,20 @@ def build_parser():
     parser.add_argument("--output-dir", type=str, default="resu")
     parser.add_argument("--no-vtk", action="store_true")
 
+    # Linear solver (state/adjoint)
+    parser.add_argument(
+        "--ksp-type",
+        type=str,
+        default="gmres",
+        help="KSP type for state/adjoint linear systems (default: gmres)",
+    )
+    parser.add_argument(
+        "--ksp-rtol",
+        type=float,
+        default=1e-10,
+        help="KSP relative tolerance (default: 1e-10)",
+    )
+
     # Logging
     parser.add_argument(
         "-v",
