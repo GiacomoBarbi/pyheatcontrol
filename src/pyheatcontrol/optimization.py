@@ -33,7 +33,8 @@ def armijo_line_search(
     """
     Backtracking line search with Armijo condition.
 
-    Returns optimal step size alpha.
+    Returns (alpha, Y_trial_all, J_trial) so the caller can reuse the trajectory
+    and avoid a redundant forward solve.
     """
 
     alpha = alpha_init
@@ -108,16 +109,16 @@ def armijo_line_search(
         if J_trial <= armijo_threshold:
             if rank == 0:
                 print(f"    [LS] Found alpha={alpha:.3e} after {ls_iter+1} tries, J={J_trial:.6e}")
-            return alpha
+            return alpha, Y_trial, J_trial
 
         # Reduce step size
         alpha *= rho
         armijo_threshold = J_current - c * alpha * dir_dot_grad
 
-    # Max iterations reached - return last alpha
+    # Max iterations reached - return last alpha and last trial state/cost
     if rank == 0:
         print(f"    [LS] Max iter reached, using alpha={alpha:.3e}")
-    return alpha
+    return alpha, Y_trial, J_trial
 
 def optimization_time_dependent(args):
     """Time-dependent optimal control with adjoint-based gradient."""
@@ -253,6 +254,9 @@ def optimization_time_dependent(args):
             elif func_type_xt == "one_minus_y_sin_x_minus_t":
             # r(x,y,t) = (1 - y) * sin(x - t)
                 T_ref_func_step.interpolate(lambda x, t=t: (1 - x[1]) * np.sin(x[0] - t))
+            elif func_type_xt == "x_pi_minus_x_sin_x_minus_t":
+            # r(x,t) = x(π-x) * sin(x - t) for Example 6.4
+                T_ref_func_step.interpolate(lambda x, t=t: x[0] * (np.pi - x[0]) * np.sin(x[0] - t))
             else:
                 raise ValueError(f"Unknown func_type_xt: {func_type_xt}")
             T_ref_values.append(T_ref_func_step)
@@ -689,8 +693,8 @@ def optimization_time_dependent(args):
                                                      solver.grad_u_distributed_time[m][j].x.array[dofs_j_owned]))
             dir_dot_grad = comm.allreduce(dir_dot_grad, op=MPI.SUM)
 
-            # Armijo line search with CG direction
-            alpha = armijo_line_search(
+            # Armijo line search with CG direction (returns trajectory to avoid redundant forward)
+            alpha, Y_trial_all, J_trial = armijo_line_search(
                 solver,
                 u_distributed_funcs_time,
                 u_neumann_funcs_time,
@@ -710,13 +714,8 @@ def optimization_time_dependent(args):
                 rank=rank
             )
 
-            # Controls are already updated by armijo_line_search
-            # Recompute J for printing (armijo already did final forward)
-            Y_all = solver.solve_forward(
-                u_neumann_funcs_time,
-                u_distributed_funcs_time,
-                u_dirichlet_funcs_time,
-            )
+            # Controls and state: reuse trajectory from line search (no redundant forward)
+            Y_all = Y_trial_all
             J, J_track, J_reg_L2, J_reg_H1, J_penalty = solver.compute_cost(
                 u_distributed_funcs_time,
                 u_neumann_funcs_time,
@@ -916,7 +915,7 @@ def optimization_time_dependent(args):
             f_err = None
         for m, Tm in enumerate(Y_final_all):
             t = m * dt
-            r_expr = (1.0 - X[1]) * ufl.sin(X[0] - t)
+            r_expr = X[0] * (np.pi - X[0]) * ufl.sin(X[0] - t)
             e_expr = r_expr - Tm
             val_loc = assemble_scalar(form((e_expr * e_expr) * ds_err))
             val = comm.allreduce(val_loc, op=MPI.SUM)
