@@ -23,6 +23,10 @@ def _init_gradient_forms_impl(self):
     self._uD_placeholder = Function(self.V)
     self._q_placeholder = Function(self.V)
 
+    # Work vector for H1 temporal regularization (reuse to avoid allocations)
+    self._v_work = TestFunction(self.V)
+    self._dx_work = ufl.Measure("dx", domain=self.domain)
+
     # --- Dirichlet forms ---
     self._grad_dirichlet_adj_forms = []
     self._grad_dirichlet_reg_forms = []
@@ -390,8 +394,9 @@ def compute_gradient_impl(
     # ============================================================
     # H1 temporal regularization for spatial controls
     # ============================================================
-    v = TestFunction(self.V)
-    dx = ufl.Measure("dx", domain=self.domain)
+    # Use pre-allocated work vectors to avoid repeated allocations
+    v = self._v_work
+    dx = self._dx_work
 
     if self.gamma_u > 1e-16 and self.num_steps >= 2:
         temp = Function(self.V)

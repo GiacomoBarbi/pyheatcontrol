@@ -255,7 +255,7 @@ class TimeDepHeatSolver:
             ksp_i = PETSc.KSP().create(self.domain.comm)
             ksp_i.setType("cg")
             ksp_i.getPC().setType("jacobi")
-            ksp_i.setTolerances(rtol=1e-12)
+            ksp_i.setTolerances(rtol=1e-8)  # relaxed for internal solves
             ksp_i.setOperators(M_i)
             self.ksp_neumann.append(ksp_i)
 
@@ -653,7 +653,7 @@ class TimeDepHeatSolver:
         self.ksp_mass = PETSc.KSP().create(domain.comm)
         self.ksp_mass.setType("cg")
         self.ksp_mass.getPC().setType("jacobi")
-        self.ksp_mass.setTolerances(rtol=1e-12)
+        self.ksp_mass.setTolerances(rtol=1e-8)  # relaxed for mass matrix solve
         self.ksp_mass.setOperators(self.M_mass)
 
         self.Y_all = []

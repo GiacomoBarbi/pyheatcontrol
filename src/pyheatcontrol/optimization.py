@@ -1281,6 +1281,10 @@ def optimization_time_dependent(args):
 
     metrics = {
         "J": float(J_final),
+        "J_track": float(J_track_final),
+        "J_reg_L2": float(J_reg_L2_final),
+        "J_reg_H1": float(J_reg_H1_final),
+        "J_penalty": float(J_penalty_final),
         "energy": float(energy),
         "violation": float(violation),
         "runtime": float(runtime),
