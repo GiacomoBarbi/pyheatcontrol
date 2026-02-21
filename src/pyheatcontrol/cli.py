@@ -11,6 +11,13 @@ def build_parser():
     parser.add_argument("--L", type=float, default=0.1)
     parser.add_argument("--H", type=float, default=None)
     parser.add_argument("--n", type=int, default=3)
+    parser.add_argument(
+        "--mesh-family",
+        type=str,
+        default="quadrilateral",
+        choices=["quadrilateral", "triangle"],
+        help="Mesh cell type: quadrilateral (Q) or triangle (P)",
+    )
 
     # Time
     parser.add_argument("--dt", type=float, default=20.0)

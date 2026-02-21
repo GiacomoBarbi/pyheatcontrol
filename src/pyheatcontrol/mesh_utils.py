@@ -4,17 +4,31 @@ import numpy as np
 from dolfinx import mesh
 from dolfinx.fem import locate_dofs_geometrical, Function, functionspace
 
-def create_mesh(n, L, H=None):
-    """Create rectangular mesh [0,L]x[0,H]."""
+def create_mesh(n, L, H=None, mesh_family="quadrilateral"):
+    """Create rectangular mesh [0,L]x[0,H].
+    
+    Args:
+        n: refinement level (2^n cells per direction)
+        L: length in x direction
+        H: height in y direction (default: L)
+        mesh_family: "quadrilateral" (Q) or "triangle" (P)
+    """
     if H is None:
         H = L  # backward compatible
+    
     Nx = 2**n
     Ny = max(1, int(2**n * H / L))  # scala con aspect ratio
+    
+    if mesh_family == "triangle":
+        cell_type = mesh.CellType.triangle
+    else:
+        cell_type = mesh.CellType.quadrilateral
+    
     domain = mesh.create_rectangle(
         MPI.COMM_WORLD,
         [[0.0, 0.0], [L, H]],
         [Nx, Ny],
-        cell_type=mesh.CellType.quadrilateral,
+        cell_type=cell_type,
     )
     return domain
 

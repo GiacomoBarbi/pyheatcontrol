@@ -241,7 +241,8 @@ def optimization_time_dependent(args):
             logger.info(f"  {i + 1}. {box}")
 
     # Mesh
-    domain = create_mesh(args.n, L, H)
+    mesh_family = getattr(args, 'mesh_family', 'quadrilateral')
+    domain = create_mesh(args.n, L, H, mesh_family)
     V = functionspace(domain, ("Lagrange", 2))
 
     # Pre-compute T_ref values for each time step
