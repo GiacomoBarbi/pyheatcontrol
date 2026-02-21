@@ -2,6 +2,7 @@ import logging
 import numpy as np
 import math
 import ufl
+import time as time_module
 from mpi4py import MPI
 from petsc4py import PETSc
 from dolfinx.fem import Function, functionspace
@@ -11,6 +12,8 @@ from pyheatcontrol.io_utils import save_visualization_output
 from pyheatcontrol.solver import TimeDepHeatSolver
 from pyheatcontrol.gradcheck import check_gradient_fd
 from pyheatcontrol.logging_config import logger
+
+PROFILE_TIMING = False  # Set to True to collect detailed timing
 
 def armijo_line_search(
     solver,
@@ -337,6 +340,17 @@ def optimization_time_dependent(args):
     )
     solver.T_ref_values = T_ref_values
 
+    # Timing dictionary for profiling
+    timing = {
+        'forward': 0.0,
+        'adjoint': 0.0,
+        'gradient': 0.0,
+        'cost': 0.0,
+        'armijo': 0.0,
+        'armijo_fwd': 0.0,
+        'sc_update': 0.0,
+        'total': 0.0,
+    }
 
     # Neumann control: space-time Function (P2 in space)
     u_neumann_funcs_time = []
@@ -527,11 +541,15 @@ def optimization_time_dependent(args):
 
         # Inner gradient descent loop
         for inner_iter in range(args.inner_maxit):
+            t0_fwd = time_module.perf_counter() if PROFILE_TIMING else 0
             Y_all = solver.solve_forward(
                 u_neumann_funcs_time,
                 u_distributed_funcs_time,
                 u_dirichlet_funcs_time,
             )
+            timing['forward'] += time_module.perf_counter() - t0_fwd if PROFILE_TIMING else 0
+
+            t0_cost = time_module.perf_counter() if PROFILE_TIMING else 0
             J, J_track, J_reg_L2, J_reg_H1, J_penalty = solver.compute_cost(
                 u_distributed_funcs_time,
                 u_neumann_funcs_time,
@@ -539,7 +557,13 @@ def optimization_time_dependent(args):
                 Y_all,
                 T_ref,
             )
+            timing['cost'] += time_module.perf_counter() - t0_cost if PROFILE_TIMING else 0
+
+            t0_adj = time_module.perf_counter() if PROFILE_TIMING else 0
             P_all = solver.solve_adjoint(Y_all, T_ref)
+            timing['adjoint'] += time_module.perf_counter() - t0_adj if PROFILE_TIMING else 0
+
+            t0_grad = time_module.perf_counter() if PROFILE_TIMING else 0
             grad = solver.compute_gradient(
                 u_controls,
                 Y_all,
@@ -548,6 +572,7 @@ def optimization_time_dependent(args):
                 u_neumann_funcs_time,
                 u_dirichlet_funcs_time,
             )
+            timing['gradient'] += time_module.perf_counter() - t0_grad if PROFILE_TIMING else 0
 
 #             # Update Dirichlet controls on ΓD
 #             if solver.n_ctrl_dirichlet > 0:
@@ -718,6 +743,7 @@ def optimization_time_dependent(args):
             dir_dot_grad = comm.allreduce(dir_dot_grad, op=MPI.SUM)
 
             # Armijo line search with CG direction (returns trajectory to avoid redundant forward)
+            t0_armijo = time_module.perf_counter() if PROFILE_TIMING else 0
             alpha, Y_trial_all, J_trial = armijo_line_search(
                 solver,
                 u_distributed_funcs_time,
@@ -733,10 +759,11 @@ def optimization_time_dependent(args):
                 alpha_init=args.lr,  # Use args.lr as initial guess
                 rho=0.5,
                 c=1e-4,
-                max_iter=20,
+                max_iter=8,  # reduced from 20 - usually converges in few iterations
                 comm=comm,
                 rank=rank
             )
+            timing['armijo'] += time_module.perf_counter() - t0_armijo if PROFILE_TIMING else 0
 
             # Controls and state: reuse trajectory from line search (no redundant forward)
             Y_all = Y_trial_all
@@ -811,6 +838,7 @@ def optimization_time_dependent(args):
             if domain.comm.rank == 0:
                 logger.debug("SC skipped mu update (no constraint zone).")
         else:
+            t0_sc = time_module.perf_counter() if PROFILE_TIMING else 0
             delta_mu, feas_inf = solver.update_multiplier_mu(
                 Y_all,
                 args.sc_type,
@@ -820,6 +848,7 @@ def optimization_time_dependent(args):
                 sc_start_step,
                 sc_end_step,
             )
+            timing['sc_update'] += time_module.perf_counter() - t0_sc if PROFILE_TIMING else 0
             if rank == 0:
                 logger.info(f"SC OUTER k={sc_iter} feas_inf={feas_inf:.6e} delta_mu={delta_mu:.6e}")
 
@@ -1289,5 +1318,10 @@ def optimization_time_dependent(args):
         "violation": float(violation),
         "runtime": float(runtime),
     }
+
+    # Add detailed timing if profiling enabled
+    if PROFILE_TIMING:
+        timing['total'] = runtime
+        metrics['timing'] = timing
 
     return T_final_diag, metrics
