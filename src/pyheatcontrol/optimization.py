@@ -759,7 +759,7 @@ def optimization_time_dependent(args):
                 alpha_init=args.lr,  # Use args.lr as initial guess
                 rho=0.5,
                 c=1e-4,
-                max_iter=8,  # reduced from 20 - usually converges in few iterations
+                max_iter=5,  # reduced from 8 - usually converges in 1-2 iterations
                 comm=comm,
                 rank=rank
             )
