@@ -168,14 +168,16 @@ Il gradiente è ~40x più piccolo con alpha_u=0. NON è un bug - è dovuto a com
 
 ## Test 13: H1 Spatial Regularization
 
-| beta_u | Risultato |
-|--------|-----------|
-| 1e-4 | ❌ Diverge |
-| 1e-8 | ✅ Converge |
+| alpha_u | beta_u | Risultato |
+|---------|--------|-----------|
+| 1e-4 | 1e-4 | ❌ Diverge |
+| 1e-4 | 1e-6 | ⚠️ Instabile |
+| 1e-4 | 1e-7 | ✅ Funziona |
+| 1e-4 | 1e-8 | ✅ Funziona |
 
-**Osservazione**: beta_u deve essere ~4 ordini di grandezza minore di alpha_u
+**Osservazione**: beta_u deve essere almeno 3-4 ordini di grandezza minore di alpha_u
 
-**Verdetto**: ⚠️ Servono parametri piccoli
+**Verdetto**: ✅ Documentazione confermata
 
 ---
 
@@ -225,6 +227,68 @@ Il gradiente è ~40x più piccolo con alpha_u=0. NON è un bug - è dovuto a com
 **Osservazione**: Entrambe le mesh convergono allo stesso valore (~25°C)
 
 **Verdetto**: ✅ Convergenza verificata
+
+---
+
+## Test 18: Smaller dt (convergence in time)
+
+**Risultato**:
+- dt=25 (vs dt=50)
+- J_final = 2.288e+03
+- T_mean = 25.015°C
+
+**Confronto**:
+| dt | J_final | T_mean |
+|----|---------|--------|
+| 50 | 2.285e+03 | 24.91°C |
+| 25 | 2.288e+03 | 25.02°C |
+
+**Verdetto**: ✅ Convergenza in dt verificata
+
+---
+
+## Test 19: Multiple target zones
+
+**Risultato**:
+- 2 zone target
+- J_final = 1.146e+03
+- T_mean zone1 = 25.02°C
+- T_mean zone2 = 24.80°C
+
+**Verdetto**: ✅ Multiple zone funziona
+
+---
+
+## Test 20: Dirichlet disturbance
+
+**Risultato**:
+- Disturbo a xL con T=50°C
+- J_final = 2.284e+03
+- T_mean = 24.88°C
+
+**Verdetto**: ✅ Disturbo gestito
+
+---
+
+## Test 21: Robin boundary (heat loss)
+
+**Risultato**:
+- Hc=10 su xL
+- J_final = 2.285e+03
+- T_mean = 24.92°C
+
+**Verdetto**: ✅ Robin boundary funziona
+
+---
+
+## Test 22: T_ref = sin function
+
+**Risultato**:
+- T_ref sinusoidale
+- J_final = 86.5
+- T_mean = 24.92°C
+
+**Verdetto**: ✅ T_ref funzioni variegate funzionano
 
 ## Tempo di esecuzione
 
