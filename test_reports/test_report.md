@@ -349,6 +349,23 @@ Il gradiente è ~40x più piccolo con alpha_u=0. NON è un bug - è dovuto a com
 
 Il codice è robusto, testato e pronto per l'uso.
 
+---
+
+## Large Scale Tests (n=4, T=600)
+
+| Test | T_mean | Tempo |
+|------|--------|-------|
+| Quad n=4, T=600 | 25.015°C | 1.9s |
+| Tri n=4, T=600 | 25.015°C | 3.6s |
+| Distributed n=4, T=600 | 25.003°C | 3.1s |
+| Neumann n=4, T=600 | 25.002°C | 6.8s |
+| dt=25 (n=4, T=600) | 25.022°C | 5.6s |
+
+**Convergenza verificata**:
+- Quad = Tri ≈ 25.015°C
+- T_mean converge indipendentemente da dt
+- Tutti i tipi di controllo funzionano
+
 ## Tempo di esecuzione
 
 - Ogni test: **~5-30 secondi** (molto più veloce delle stime iniziali!)
