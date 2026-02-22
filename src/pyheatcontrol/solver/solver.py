@@ -13,6 +13,8 @@ from .adjoint import solve_adjoint_impl
 from .gradient import (
     _init_gradient_forms_impl,
     compute_gradient_impl,
+    update_multiplier_mu_impl,
+    tgrad_impl,
 )
 from pyheatcontrol.constants import EPS_SINGULARITY, EPS_REGULARIZATION, RTOL_INTERNAL, RTOL_ACCURATE, RTOL_MASS
 from pyheatcontrol.mesh_utils import (

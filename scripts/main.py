@@ -35,13 +35,13 @@ def main():
     # Default thresholds based on constraint type
     if args.sc_type in ["lower", "box"]:
         if args.sc_lower is None:
-            args.sc_lower = args.T_cure
+            args.sc_lower = args.T_ref
     else:
         args.sc_lower = -1e10  # Very low (no lower constraint)
 
     if args.sc_type in ["upper", "box"]:
         if args.sc_upper is None:
-            args.sc_upper = args.T_cure
+            args.sc_upper = args.T_ref
     else:
         args.sc_upper = 1e10  # Very high (no upper constraint)
 
