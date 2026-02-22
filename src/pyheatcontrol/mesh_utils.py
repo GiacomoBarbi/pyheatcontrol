@@ -3,6 +3,7 @@ from mpi4py import MPI
 import numpy as np
 from dolfinx import mesh
 from dolfinx.fem import locate_dofs_geometrical, Function, functionspace
+from pyheatcontrol.constants import EPS_MACHINE
 
 def create_mesh(n, L, H=None, mesh_family="quadrilateral"):
     """Create rectangular mesh [0,L]x[0,H].
@@ -64,7 +65,7 @@ def mark_cells_in_boxes(domain, boxes, L, H=None, Vc=None):
 def create_boundary_condition_function(domain, V, segments, L, H):
 
     def boundary_predicate(x):
-        eps = 1e-14
+        eps = EPS_MACHINE
         mask = np.zeros(x.shape[1], dtype=bool)
 
         for side, tmin, tmax in segments:
@@ -114,7 +115,7 @@ def create_boundary_facet_tags(domain, segments, L, H, marker_id):
     fdim = tdim - 1
 
     def boundary_predicate(x):
-        eps = 1e-14
+        eps = EPS_MACHINE
         mask = np.zeros(x.shape[1], dtype=bool)
 
         for side, tmin, tmax in segments:

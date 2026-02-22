@@ -12,6 +12,7 @@ from pyheatcontrol.io_utils import save_visualization_output
 from pyheatcontrol.solver import TimeDepHeatSolver
 from pyheatcontrol.gradcheck import check_gradient_fd
 from pyheatcontrol.logging_config import logger
+from pyheatcontrol.constants import EPS_MACHINE, EPS_SINGULARITY, EPS_REGULARIZATION
 
 PROFILE_TIMING = False  # Set to True to collect detailed timing
 
@@ -697,7 +698,7 @@ def optimization_time_dependent(args):
                                    for m in range(num_steps)] if solver.n_ctrl_distributed > 0 else None
             else:
                 # Fletcher-Reeves beta
-                beta = grad_sq / grad_sq_old if grad_sq_old > 1e-16 else 0.0
+                beta = grad_sq / grad_sq_old if grad_sq_old > EPS_SINGULARITY else 0.0
                 
                 # Update direction: d = -grad + beta * d_old
                 if solver.n_ctrl_dirichlet > 0:
@@ -1027,7 +1028,7 @@ def optimization_time_dependent(args):
                     um = u_distributed_funcs_time[m][j]
                     num_loc = assemble_scalar(form(um * chiV * dx))
                     num = comm.allreduce(num_loc, op=MPI.SUM)
-                    mean_um = float(num / den) if den > 1e-14 else float("nan")
+                    mean_um = float(num / den) if den > EPS_MACHINE else float("nan")
                     sample_means.append((m * solver.dt, mean_um))
                 for m in range(num_steps - 1):
                     u0 = u_distributed_funcs_time[m][j]
@@ -1201,7 +1202,7 @@ def optimization_time_dependent(args):
             else:
                 logger.debug("No constraint cells -> skipping Tmin/Tmax check.")
 
-            if chi_integral > 1e-12:
+            if chi_integral > EPS_REGULARIZATION:
                 T_mean = zone_integral / chi_integral
                 print(f"\n  Target zone {i + 1}:")
                 print(f"    T_mean ≈ {T_mean:.6f}°C")

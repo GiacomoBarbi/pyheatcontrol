@@ -13,9 +13,8 @@ from .adjoint import solve_adjoint_impl
 from .gradient import (
     _init_gradient_forms_impl,
     compute_gradient_impl,
-    tgrad_impl,
-    update_multiplier_mu_impl,
 )
+from pyheatcontrol.constants import EPS_SINGULARITY, EPS_REGULARIZATION, RTOL_INTERNAL, RTOL_ACCURATE, RTOL_MASS
 from pyheatcontrol.mesh_utils import (
     create_boundary_condition_function,
     create_boundary_facet_tags,
@@ -229,7 +228,7 @@ class TimeDepHeatSolver:
         v_mass = TestFunction(self.V)
 
         for i, mid in enumerate(self.neumann_marker_ids):
-            eps = PETSc.ScalarType(1e-12)
+            eps = PETSc.ScalarType(EPS_REGULARIZATION)
             M_i = assemble_matrix(
                 form(
                     u_mass * v_mass * self.ds_neumann(mid) + eps * u_mass * v_mass * dx
@@ -255,7 +254,7 @@ class TimeDepHeatSolver:
             ksp_i = PETSc.KSP().create(self.domain.comm)
             ksp_i.setType("cg")
             ksp_i.getPC().setType("jacobi")
-            ksp_i.setTolerances(rtol=1e-8)  # relaxed for internal solves
+            ksp_i.setTolerances(rtol=RTOL_INTERNAL)
             ksp_i.setOperators(M_i)
             self.ksp_neumann.append(ksp_i)
 
@@ -373,7 +372,7 @@ class TimeDepHeatSolver:
                 else:
                     a_form = mass_form  # pure L2
 
-                eps = PETSc.ScalarType(1e-12)
+                eps = PETSc.ScalarType(EPS_REGULARIZATION)
                 M_i = assemble_matrix(form(a_form + eps * u_trial * v_test * dx))
                 M_i.assemble()
 
@@ -397,7 +396,7 @@ class TimeDepHeatSolver:
                 ksp_i = PETSc.KSP().create(self.domain.comm)
                 ksp_i.setType("cg")
                 ksp_i.getPC().setType("jacobi")
-                ksp_i.setTolerances(rtol=1e-12)
+                ksp_i.setTolerances(rtol=RTOL_ACCURATE)
                 ksp_i.setOperators(M_i)
                 self.ksp_dirichlet.append(ksp_i)
 
@@ -470,7 +469,7 @@ class TimeDepHeatSolver:
                 ksp_i = PETSc.KSP().create(self.domain.comm)
                 ksp_i.setType("cg")
                 ksp_i.getPC().setType("jacobi")
-                ksp_i.setTolerances(rtol=1e-12)
+                ksp_i.setTolerances(rtol=RTOL_ACCURATE)
                 ksp_i.setOperators(M_i)
                 self.ksp_distributed.append(ksp_i)
         # -------------------------
@@ -653,7 +652,7 @@ class TimeDepHeatSolver:
         self.ksp_mass = PETSc.KSP().create(domain.comm)
         self.ksp_mass.setType("cg")
         self.ksp_mass.getPC().setType("jacobi")
-        self.ksp_mass.setTolerances(rtol=1e-8)  # relaxed for mass matrix solve
+        self.ksp_mass.setTolerances(rtol=RTOL_MASS)
         self.ksp_mass.setOperators(self.M_mass)
 
         self.Y_all = []
@@ -898,7 +897,7 @@ class TimeDepHeatSolver:
         J_reg_L2 = 0.0
 
         # ---- Distributed (precompiled L2)
-        if self.n_ctrl_distributed > 0 and self.alpha_u > 1e-16:
+        if self.n_ctrl_distributed > 0 and self.alpha_u > EPS_SINGULARITY:
             coef_L2 = 0.5 * self.alpha_u * self.dt
             for m in range(self.num_steps):
                 for j in range(self.n_ctrl_distributed):
@@ -910,7 +909,7 @@ class TimeDepHeatSolver:
                     J_reg_L2 += coef_L2 * assemble_scalar(self._dist_L2_forms[j])
 
         # ---- Dirichlet (precompiled L2)
-        if self.n_ctrl_dirichlet > 0 and self.alpha_u > 1e-16:
+        if self.n_ctrl_dirichlet > 0 and self.alpha_u > EPS_SINGULARITY:
             coef_L2 = 0.5 * self.alpha_u * self.dt
             for m in range(self.num_steps):
                 for j in range(self.n_ctrl_dirichlet):
@@ -921,7 +920,7 @@ class TimeDepHeatSolver:
                     J_reg_L2 += coef_L2 * assemble_scalar(self._dir_L2_forms[j])
 
         # ---- Neumann (precompiled L2)
-        if self.n_ctrl_neumann > 0 and self.alpha_u > 1e-16:
+        if self.n_ctrl_neumann > 0 and self.alpha_u > EPS_SINGULARITY:
             coef_L2 = 0.5 * self.alpha_u * self.dt
             for m in range(self.num_steps):
                 for j in range(self.n_ctrl_neumann):
@@ -938,7 +937,7 @@ class TimeDepHeatSolver:
         if (
             self.n_ctrl_dirichlet > 0
             and self.dirichlet_spatial_reg == "H1"
-            and self.beta_u > 1e-16
+            and self.beta_u > EPS_SINGULARITY
         ):
             for m in range(self.num_steps):
                 for j in range(self.n_ctrl_dirichlet):
@@ -958,7 +957,7 @@ class TimeDepHeatSolver:
         # J = γ/(2 dt) Σ ||u^{m+1} − u^m||²
         # ============================================================
         J_reg_H1 = 0.0
-        if self.gamma_u > 1e-16:
+        if self.gamma_u > EPS_SINGULARITY:
             coef = 0.5 * self.gamma_u / self.dt
 
             # ---- Distributed (precompiled H1 in time)

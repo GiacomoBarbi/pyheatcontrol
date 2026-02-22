@@ -8,6 +8,7 @@ from ufl import grad as ufl_grad, inner, TestFunction, FacetNormal
 from dolfinx.fem import form, Function, functionspace
 from dolfinx.fem.petsc import assemble_vector
 from pyheatcontrol.logging_config import logger
+from pyheatcontrol.constants import EPS_SINGULARITY
 
 
 def _init_gradient_forms_impl(self):
@@ -43,7 +44,7 @@ def _init_gradient_forms_impl(self):
         self._grad_dirichlet_adj_forms.append(form(flux_form))
 
         # L2 regularization: α_u dt uD v on ΓD
-        if self.alpha_u > 1e-16:
+        if self.alpha_u > EPS_SINGULARITY:
             reg_form = self.alpha_u * self.dt * self._uD_placeholder * v * ds_i(mid)
             self._grad_dirichlet_reg_forms.append(form(reg_form))
         else:
@@ -51,7 +52,7 @@ def _init_gradient_forms_impl(self):
 
         # H1 spatial regularization: β_u dt ⟨∇_Γ uD, ∇_Γ v⟩_ΓD
         # Always build or set None, so compute_gradient never compiles forms in loops
-        if self.beta_u > 1e-16:
+        if self.beta_u > EPS_SINGULARITY:
             tg_u = self.tgrad(self._uD_placeholder)
             tg_v = self.tgrad(v)
             regH1_form = self.beta_u * self.dt * inner(tg_u, tg_v) * ds_i(mid)
@@ -70,7 +71,7 @@ def _init_gradient_forms_impl(self):
         self._grad_neumann_adj_forms.append(form(adj_form))
 
         # L2 regularization: α_u dt q v on Γ
-        if self.alpha_u > 1e-16:
+        if self.alpha_u > EPS_SINGULARITY:
             reg_form = (
                 self.alpha_u * self.dt * self._q_placeholder * v * self.ds_neumann(mid)
             )
@@ -89,7 +90,7 @@ def _init_gradient_forms_impl(self):
         self._grad_distributed_adj_forms.append(form(adj_form))
 
         # L2 regularization: α_u dt uD χ v dx
-        if self.alpha_u > 1e-16:
+        if self.alpha_u > EPS_SINGULARITY:
             reg_form = self.alpha_u * self.dt * self._uD_placeholder * chiV * v * dx
             self._grad_distributed_reg_forms.append(form(reg_form))
         else:
@@ -186,7 +187,7 @@ def compute_gradient_impl(
             b_total = b_adj.copy()
 
             # Add L2(Γ) regularization
-            if self.alpha_u > 1e-16:
+            if self.alpha_u > EPS_SINGULARITY:
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
                 b_reg_L2 = assemble_vector(self._grad_dirichlet_reg_forms[i])
@@ -197,7 +198,7 @@ def compute_gradient_impl(
 
             # Add H1(Γ) regularization (tangential gradient)
             
-            if self.dirichlet_spatial_reg == "H1" and self.beta_u > 1e-16:
+            if self.dirichlet_spatial_reg == "H1" and self.beta_u > EPS_SINGULARITY:
                 # Use precompiled H1 form
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
@@ -212,14 +213,14 @@ def compute_gradient_impl(
                 # .norm() is MPI collective - all ranks must call
                 if b_reg_H1 is not None:
                     h1_norm = b_reg_H1.norm()   # MPI collective
-                    if self.alpha_u > 1e-16:
+                    if self.alpha_u > EPS_SINGULARITY:
                         l2_norm = b_reg_L2.norm()
                     else:
                         l2_norm = 0.0
                     if self.domain.comm.rank == 0 and m == 0:
                         logger.debug(
                             f"H1: m={m}, i={i}: ||b_L2||={l2_norm:.3e}, ||b_H1||={h1_norm:.3e}, "
-                            f"ratio={h1_norm / max(l2_norm, 1e-16):.3e}"
+                            f"ratio={h1_norm / max(l2_norm, EPS_SINGULARITY):.3e}"
                         )
 
             # Solve Riesz map: M_dirichlet * gD = b_total
@@ -303,7 +304,7 @@ def compute_gradient_impl(
             b_total = b_adj.copy()
 
             # Add L2(Γ) regularization
-            if self.alpha_u > 1e-16:
+            if self.alpha_u > EPS_SINGULARITY:
                 self._q_placeholder.x.array[:] = q_current.x.array[:]
                 self._q_placeholder.x.scatter_forward()
                 b_reg = assemble_vector(self._grad_neumann_reg_forms[i])
@@ -360,7 +361,7 @@ def compute_gradient_impl(
             b_total = b_adj.copy()
 
             # Add L2 regularization
-            if self.alpha_u > 1e-16:
+            if self.alpha_u > EPS_SINGULARITY:
                 self._uD_placeholder.x.array[:] = uD_current.x.array[:]
                 self._uD_placeholder.x.scatter_forward()
                 b_reg = assemble_vector(self._grad_distributed_reg_forms[i])
@@ -398,7 +399,7 @@ def compute_gradient_impl(
     v = self._v_work
     dx = self._dx_work
 
-    if self.gamma_u > 1e-16 and self.num_steps >= 2:
+    if self.gamma_u > EPS_SINGULARITY and self.num_steps >= 2:
         temp = Function(self.V)
 
         # Distributed controls
