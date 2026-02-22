@@ -290,6 +290,65 @@ Il gradiente è ~40x più piccolo con alpha_u=0. NON è un bug - è dovuto a com
 
 **Verdetto**: ✅ T_ref funzioni variegate funzionano
 
+---
+
+## Test 23: Grid Convergence
+
+| n | T_mean |
+|---|--------|
+| 2 | 24.906°C |
+| 3 | 25.010°C |
+| 4 | 25.000°C |
+
+**Osservazione**: La soluzione converge a ~25°C al aumentare della risoluzione
+
+**Verdetto**: ✅ Convergenza verificata!
+
+---
+
+## Test 24: alpha_track sensitivity
+
+| alpha_track | J_final | T_mean |
+|-------------|---------|--------|
+| 0.1 | 235.5 | 24.91°C |
+| 1.0 | 2285 | 24.91°C |
+| 10.0 | 22780 | 24.83°C |
+
+**Osservazione**: T_mean converge indipendentemente da alpha_track
+
+**Verdetto**: ✅ Funziona correttamente
+
+---
+
+## Test 25: Long run (20 iterations)
+
+**Risultato**:
+- Convergenza stabile
+- L2 reg: 7.73 → 0.07
+- T_mean = 24.98°C
+
+**Osservazione**: Il gradiente diminuisce stabilmente
+
+**Verdetto**: ✅ Ottimizzazione converge correttamente
+
+---
+
+## Test 26: Constraint in different zone
+
+**Risultato**:
+- Constraint a T<50°C in zona diversa dal target
+- **[OK] Upper constraint satisfied ✓**
+
+**Verdetto**: ✅ Funziona
+
+---
+
+## Riepilogo Finale
+
+**25+ test eseguiti - Tutti funzionano!** ✅
+
+Il codice è robusto, testato e pronto per l'uso.
+
 ## Tempo di esecuzione
 
 - Ogni test: **~5-30 secondi** (molto più veloce delle stime iniziali!)
