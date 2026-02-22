@@ -384,6 +384,23 @@ Questo spiega perché tutti i test davano ~25°C - è un problema fisico, non de
 
 Il codice **funziona correttamente** - il problema sono i parametri di default.
 
+---
+
+## Realistic Physical Tests (k=15)
+
+| Configurazione | T_mean | T_ref | Note |
+|---------------|--------|-------|------|
+| Dirichlet, k=15 | 152°C | 160°C | ✅ |
+| Dirichlet + u_max=500 | 152°C | 160°C | Controlli ~800 |
+| Combined (Dir+Neu+Dist) | **156°C** | 160°C | ✅ Migliore |
+| Neumann, k=15 | 26°C | 160°C | ❌ |
+| Distributed, k=15 | 25°C | 160°C | ❌ |
+
+**Conclusioni**:
+- Dirichlet è il più efficace per riscaldare
+- k=15 necessario per diffusione adeguata
+- Combined controls dà miglior risultato (97.5% di T_ref)
+
 ## Tempo di esecuzione
 
 - Ogni test: **~5-30 secondi** (molto più veloce delle stime iniziali!)
