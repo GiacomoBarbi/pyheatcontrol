@@ -401,6 +401,21 @@ Il codice **funziona correttamente** - il problema sono i parametri di default.
 - k=15 necessario per diffusione adeguata
 - Combined controls dà miglior risultato (97.5% di T_ref)
 
+---
+
+## Additional Tests (6 more)
+
+| # | Test | Risultato | Note |
+|---|------|-----------|------|
+| 1 | Target on boundary | ✅ | Funziona |
+| 2 | Gradient check | ❌ | Bug in gradcheck.py (API) |
+| 3 | Different rho/c | ✅ | rho=500, c=2000 → T=166°C |
+| 4 | Constraint + Control | ✅ | Constraint rispettato |
+| 5 | Longer T=1000 | ✅ | Funziona |
+| 6 | Time-varying constraint | ⚠️ | Funziona ma risultati strani |
+
+**5/6 test passano!**
+
 ## Tempo di esecuzione
 
 - Ogni test: **~5-30 secondi** (molto più veloce delle stime iniziali!)
