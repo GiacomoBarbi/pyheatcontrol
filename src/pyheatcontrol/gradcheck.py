@@ -199,7 +199,6 @@ def check_gradient_fd(
             u_neumann_funcs_time,
             u_distributed_funcs_time,
             u_dirichlet_funcs_time,
-            T_cure,
         )
         J0, *_ = solver.compute_cost(
             u_distributed_funcs_time,
@@ -235,7 +234,6 @@ def check_gradient_fd(
             u_neumann_funcs_time,
             u_distributed_funcs_time,
             u_dirichlet_funcs_time,
-            T_cure,
         )
         Jp, *_ = solver.compute_cost(
             u_distributed_funcs_time,
@@ -251,7 +249,6 @@ def check_gradient_fd(
             u_neumann_funcs_time,
             u_distributed_funcs_time,
             u_dirichlet_funcs_time,
-            T_cure,
         )
         Jm, *_ = solver.compute_cost(
             u_distributed_funcs_time,
