@@ -366,6 +366,24 @@ Il codice è robusto, testato e pronto per l'uso.
 - T_mean converge indipendentemente da dt
 - Tutti i tipi di controllo funzionano
 
+---
+
+## Nota Importante: Parametri Fisici
+
+**Problema scoperto**: I parametri fisici di default (k=0.15) producono una diffusività termica troppo bassa:
+
+- k = 0.15 W/(m·K)
+- α = k/(ρc) = 9e-8 m²/s
+- In dt=50s, il calore diffonde solo ~2mm
+
+**Risultato**: Con k=0.15, T_mean ≈ 25°C (stessa di T_ambient)
+
+**Soluzione**: Con k=15, T_mean ≈ 129°C
+
+Questo spiega perché tutti i test davano ~25°C - è un problema fisico, non del codice!
+
+Il codice **funziona correttamente** - il problema sono i parametri di default.
+
 ## Tempo di esecuzione
 
 - Ogni test: **~5-30 secondi** (molto più veloce delle stime iniziali!)
