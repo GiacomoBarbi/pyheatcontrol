@@ -715,8 +715,9 @@ class TimeDepHeatSolver:
     def update_multiplier_mu(
         self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step
     ):
+        sc_use_mean = getattr(self, 'sc_use_mean', False)
         return update_multiplier_mu_impl(
-            self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step
+            self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step, sc_use_mean
         )
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1003,33 +1004,59 @@ class TimeDepHeatSolver:
         # J_penalty = ∫∫_Ωc [μ·violation + (β/2)·violation²] dx dt
         # ============================================================
         J_penalty = 0.0
-        if hasattr(self, 'sc_type') and self.sc_type is not None and np.any(self.sc_marker):
-            dx = ufl.Measure("dx", domain=self.domain)
-            mask = self.sc_marker.astype(bool)
-            n_local = self.Vc.dofmap.index_map.size_local
+        if hasattr(self, 'sc_type') and self.sc_type is not None:
+            mask = self.sc_marker.astype(bool) if hasattr(self, 'sc_marker') else np.array([], dtype=bool)
+            has_mask = np.any(mask) if mask.size > 0 else False
+            use_mean_constraint = getattr(self, 'sc_use_mean', False)
+            use_quadratic = getattr(self, 'sc_quadratic_penalty', True)
+            if has_mask and np.any(mask):
+                dx = ufl.Measure("dx", domain=self.domain)
+                n_local = self.Vc.dofmap.index_map.size_local
 
-            for m in range(self.sc_start_step, self.sc_end_step + 1):
-                weight = 0.5 if (m == self.sc_start_step or m == self.sc_end_step) else 1.0
+                for m in range(self.sc_start_step, self.sc_end_step + 1):
+                    weight = 0.5 if (m == self.sc_start_step or m == self.sc_end_step) else 1.0
 
-                # Project temperature to DG0
-                self._T_cell.interpolate(Y_all[m])
-                T_arr = self._T_cell.x.array[:n_local]
+                    # Project temperature to DG0
+                    self._T_cell.interpolate(Y_all[m])
+                    T_arr = self._T_cell.x.array[:n_local]
 
-                # Get multipliers
-                muL = self.mu_lower_time[m, :n_local]
-                muU = self.mu_upper_time[m, :n_local]
+                    # Compute T_mean over constraint zone if using mean constraint
+                    if use_mean_constraint:
+                        T_in_zone = T_arr[mask]
+                        zone_sum = np.sum(T_in_zone) if len(T_in_zone) > 0 else 0.0
+                        zone_count = np.sum(mask) if mask.size > 0 else 0
+                        T_mean = zone_sum / max(zone_count, 1)
+                        
+                        # For mean constraint: penalty acts on mean temperature
+                        # J_penalty = mu_mean * viol [+ beta/2 * viol^2 if use_quadratic]
+                        if self.sc_type in ["lower", "box"] and self.sc_lower is not None:
+                            violL = max(0.0, self.sc_lower - T_mean)
+                            muL_mean = self.mu_lower_time[m].mean()
+                            J_penalty += weight * self.dt * muL_mean * violL
+                            if use_quadratic:
+                                J_penalty += weight * self.dt * 0.5 * self.beta_sc * violL**2
+                        if self.sc_type in ["upper", "box"] and self.sc_upper is not None:
+                            violU = max(0.0, T_mean - self.sc_upper)
+                            muU_mean = self.mu_upper_time[m].mean()
+                            J_penalty += weight * self.dt * muU_mean * violU
+                            if use_quadratic:
+                                J_penalty += weight * self.dt * 0.5 * self.beta_sc * violU**2
+                    else:
+                        # Cell-wise constraint (original)
+                        muL = self.mu_lower_time[m, :n_local]
+                        muU = self.mu_upper_time[m, :n_local]
 
-                # Compute violations
-                if self.sc_type in ["lower", "box"] and self.sc_lower is not None:
-                    violL = np.maximum(0.0, self.sc_lower - T_arr) * mask
-                    # μ·violation + (β/2)·violation²
-                    J_penalty += weight * self.dt * np.sum(muL * violL)
-                    J_penalty += weight * self.dt * 0.5 * self.beta_sc * np.sum(violL**2)
+                        if self.sc_type in ["lower", "box"] and self.sc_lower is not None:
+                            violL = np.maximum(0.0, self.sc_lower - T_arr) * mask
+                            J_penalty += weight * self.dt * np.sum(muL * violL)
+                            if use_quadratic:
+                                J_penalty += weight * self.dt * 0.5 * self.beta_sc * np.sum(violL**2)
 
-                if self.sc_type in ["upper", "box"] and self.sc_upper is not None:
-                    violU = np.maximum(0.0, T_arr - self.sc_upper) * mask
-                    J_penalty += weight * self.dt * np.sum(muU * violU)
-                    J_penalty += weight * self.dt * 0.5 * self.beta_sc * np.sum(violU**2)
+                        if self.sc_type in ["upper", "box"] and self.sc_upper is not None:
+                            violU = np.maximum(0.0, T_arr - self.sc_upper) * mask
+                            J_penalty += weight * self.dt * np.sum(muU * violU)
+                            if use_quadratic:
+                                J_penalty += weight * self.dt * 0.5 * self.beta_sc * np.sum(violU**2)
 
         # ============================================================
         # MPI reduction: assemble_scalar returns local contributions only
@@ -1045,7 +1072,7 @@ class TimeDepHeatSolver:
             )
         return J_total, J_track, J_reg_L2, J_reg_H1, J_penalty
 # ===============================================================================================
-    def set_constraint_params(self, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step):
+    def set_constraint_params(self, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step, sc_use_mean=False, sc_quadratic_penalty=True):
         """Set state constraint parameters for augmented Lagrangian penalty."""
         self.sc_type = sc_type
         self.sc_lower = sc_lower
@@ -1053,3 +1080,131 @@ class TimeDepHeatSolver:
         self.beta_sc = beta
         self.sc_start_step = sc_start_step
         self.sc_end_step = sc_end_step
+        self.sc_use_mean = sc_use_mean
+        self.sc_quadratic_penalty = sc_quadratic_penalty
+
+    # ===============================================================================================
+    def save_temperature_timeseries(self, filename):
+        """Save T_mean, T_min, and T_max time series to CSV file."""
+        import os
+        comm = self.domain.comm
+        if comm.rank == 0:
+            time = self.time_axis
+            tmean = self.tmean_timeseries
+            tmin = self.tmin_timeseries
+            tmax = self.tmax_timeseries
+            data = np.column_stack([time, tmean, tmin, tmax])
+            header = "time,T_mean,T_min,T_max"
+            np.savetxt(filename, data, delimiter=",", header=header, comments="", fmt="%.6f")
+            logger.info(f"Saved temperature time series to {filename}")
+
+    # ===============================================================================================
+    def compute_temperature_timeseries_from_Y(self, Y_all):
+        """Compute T_mean, T_min, T_max time series from Y_all state solutions."""
+        from ufl import dx as ufl_dx
+        comm = self.domain.comm
+        num_steps = len(Y_all) - 1
+        
+        self.time_axis = np.array([i * self.dt for i in range(num_steps + 1)])
+        self.tmean_timeseries = np.zeros(num_steps + 1)
+        self.tmin_timeseries = np.zeros(num_steps + 1)  # T_min in target zone
+        self.tmax_timeseries = np.zeros(num_steps + 1)
+        
+        # Use target_markers directly like in optimization.py
+        V0_dg0 = self.Vc
+        chi_dg0 = Function(V0_dg0)
+        n_local = V0_dg0.dofmap.index_map.size_local
+        marker_bool = np.zeros(n_local, dtype=bool)
+        
+        # Set up chi from target_markers[0]
+        if len(self.target_markers) > 0:
+            marker = self.target_markers[0]
+            chi_dg0.x.array[:n_local] = marker.astype(PETSc.ScalarType)
+            chi_dg0.x.scatter_forward()
+            marker_bool = marker.astype(bool)
+        
+        # Pre-compute chi integral
+        chi_integral_local = assemble_scalar(form(chi_dg0 * ufl_dx))
+        chi_integral = comm.allreduce(chi_integral_local, op=MPI.SUM)
+        
+        # T_cell for projection
+        T_cell = Function(V0_dg0)
+        
+        for m in range(num_steps + 1):
+            T = Y_all[m]
+            
+            # T_max over whole domain
+            local_T = T.x.array
+            if local_T.size > 0:
+                local_max = float(local_T.max())
+                local_min = float(local_T.min())
+            else:
+                local_max = -np.inf
+                local_min = np.inf
+            global_max = comm.allreduce(local_max, op=MPI.MAX)
+            global_min = comm.allreduce(local_min, op=MPI.MIN)
+            self.tmax_timeseries[m] = global_max
+            
+            # T_mean and T_min over target zone - project T to DG0 first
+            T_cell.interpolate(T)
+            T_arr = T_cell.x.array[:n_local]
+            # Apply marker mask to get only target zone cells
+            T_in_zone = T_arr[marker_bool]
+            
+            if len(T_in_zone) > 0:
+                zone_min = float(T_in_zone.min())
+                zone_max = float(T_in_zone.max())
+            else:
+                zone_min = self.T_ambient
+                zone_max = self.T_ambient
+            
+            zone_min_global = comm.allreduce(zone_min, op=MPI.MIN)
+            self.tmin_timeseries[m] = zone_min_global
+            
+            # T_mean
+            zone_integral_local = assemble_scalar(form(T_cell * chi_dg0 * ufl_dx))
+            zone_integral = comm.allreduce(zone_integral_local, op=MPI.SUM)
+            
+            if chi_integral > 1e-12:
+                self.tmean_timeseries[m] = zone_integral / chi_integral
+            else:
+                self.tmean_timeseries[m] = self.T_ambient
+
+    # ===============================================================================================
+    def _compute_zone_temperature(self, T):
+        """Compute T_mean over target zone and T_max over whole domain."""
+        from ufl import dx as ufl_dx
+        comm = self.domain.comm
+        
+        # T_max over whole domain
+        local_T = T.x.array
+        if local_T.size > 0:
+            local_max = float(local_T.max())
+            local_min = float(local_T.min())
+        else:
+            local_max = -np.inf
+            local_min = np.inf
+        global_max = comm.allreduce(local_max, op=MPI.MAX)
+        global_min = comm.allreduce(local_min, op=MPI.MIN)
+
+        # T_mean over target zone (or ambient fallback if not defined)
+        tmean = self.T_ambient
+        if len(self.target_markers) > 0:
+            V0_dg0 = self.Vc
+            n_local = V0_dg0.dofmap.index_map.size_local
+            chi_dg0 = Function(V0_dg0)
+            marker = self.target_markers[0]
+            chi_dg0.x.array[:n_local] = marker.astype(PETSc.ScalarType)
+            chi_dg0.x.scatter_forward()
+
+            T_cell = Function(V0_dg0)
+            T_cell.interpolate(T)
+
+            chi_integral_local = assemble_scalar(form(chi_dg0 * ufl_dx))
+            chi_integral = comm.allreduce(chi_integral_local, op=MPI.SUM)
+            if chi_integral > 1e-12:
+                zone_integral_local = assemble_scalar(form(T_cell * chi_dg0 * ufl_dx))
+                zone_integral = comm.allreduce(zone_integral_local, op=MPI.SUM)
+                tmean = zone_integral / chi_integral
+
+        return tmean, global_max

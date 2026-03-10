@@ -84,7 +84,7 @@ def armijo_line_search(
                 dofs_i = solver.neumann_dofs[i]
                 for m in range(num_steps):
                     u_neumann_funcs_time[m][i].x.array[dofs_i] = \
-                        u_neum_backup[m][i][dofs_i] + alpha * dir_neumann[m][i][dofs_i]
+                        u_neum_backup[m][i][dofs_i] - alpha * dir_neumann[m][i][dofs_i]
                     u_neumann_funcs_time[m][i].x.scatter_forward()
 
         # Update Dirichlet
@@ -453,6 +453,25 @@ def optimization_time_dependent(args):
 
     has_constraints = len(constraint_boxes) > 0
 
+    # Normalize path-constraint bounds to avoid runtime errors when called
+    # programmatically with incomplete args (e.g. missing sc_lower/sc_upper).
+    sc_lower = args.sc_lower
+    sc_upper = args.sc_upper
+    if args.sc_type in ["lower", "box"] and sc_lower is None:
+        sc_lower = float(T_ambient)
+        if rank == 0:
+            logger.warning(
+                f"sc_lower not set for sc_type='{args.sc_type}'; defaulting to T_ambient={sc_lower:.3f}°C"
+            )
+    if args.sc_type in ["upper", "box"] and sc_upper is None:
+        sc_upper = 1e10
+        if rank == 0:
+            logger.warning(
+                f"sc_upper not set for sc_type='{args.sc_type}'; defaulting to {sc_upper:.3e}"
+            )
+    args.sc_lower = sc_lower
+    args.sc_upper = sc_upper
+
     # Constraint time window (always defined, even without constraints)
     sc_start_time = args.sc_start_time if args.sc_start_time is not None else 0.0
     sc_end_time = args.sc_end_time if args.sc_end_time is not None else T_final_time
@@ -463,11 +482,13 @@ def optimization_time_dependent(args):
 
     solver.set_constraint_params(
         args.sc_type,
-        args.sc_lower,
-        args.sc_upper,
+        sc_lower,
+        sc_upper,
         args.beta,
         sc_start_step,
         sc_end_step,
+        getattr(args, 'sc_use_mean', False),
+        not getattr(args, 'sc_no_quadratic_penalty', False),
     )
 
     # Initialize multipliers to zero (always, even without constraints)
@@ -628,7 +649,7 @@ def optimization_time_dependent(args):
                     u_dirichlet_funcs_time,
                     T_ref,
                     eps=args.fd_eps,
-                    seed=1,
+                    seed=getattr(args, "check_grad_seed", 1),
                     m0=0,
                 )
 
@@ -818,6 +839,12 @@ def optimization_time_dependent(args):
                 if rank == 0:
                     print(f"  [Inner converged at iter {inner_iter}]")
                 break
+            
+            # Guard: if J explodes, stop inner loop
+            if J > 1e15:
+                if rank == 0:
+                    print(f"  [WARNING] J exploded ({J:.2e}), stopping inner loop")
+                break
 
         # functionspace/Function/interpolate are MPI collective
         Vc = solver.Vc
@@ -852,7 +879,53 @@ def optimization_time_dependent(args):
             )
             timing['sc_update'] += time_module.perf_counter() - t0_sc if PROFILE_TIMING else 0
             if rank == 0:
-                logger.info(f"SC OUTER k={sc_iter} feas_inf={feas_inf:.6e} delta_mu={delta_mu:.6e}")
+                # Get multiplier stats for debugging
+                muL_vals = []
+                muU_vals = []
+                T_mean_vals = []
+                violL_vals = []
+                violU_vals = []
+                for m in range(sc_start_step, sc_end_step + 1):
+                    muL_vals.append(solver.mu_lower_time[m].mean())
+                    muU_vals.append(solver.mu_upper_time[m].mean())
+                    # Get T_mean and violations
+                    mask = solver.sc_marker.astype(bool)
+                    n_local = solver.Vc.dofmap.index_map.size_local
+                    solver._T_cell.interpolate(Y_all[m])
+                    T_arr = solver._T_cell.x.array[:n_local]
+                    if np.any(mask):
+                        T_mean_vals.append(np.mean(T_arr[mask]))
+                        # Compute violations
+                        if args.sc_type in ["lower", "box"] and args.sc_lower is not None:
+                            violL_vals.append(max(0.0, args.sc_lower - np.mean(T_arr[mask])))
+                        if args.sc_type in ["upper", "box"] and args.sc_upper is not None:
+                            violU_vals.append(max(0.0, np.mean(T_arr[mask]) - args.sc_upper))
+                    else:
+                        T_mean_vals.append(0.0)
+                
+                # Get u values
+                u_vals = []
+                if solver.n_ctrl_neumann > 0:
+                    for m in range(num_steps):
+                        u_vals.append(float(u_neumann_funcs_time[m][0].x.array[0]))
+                if solver.n_ctrl_distributed > 0:
+                    for m in range(num_steps):
+                        u_vals.append(float(u_distributed_funcs_time[m][0].x.array[0]))
+                if solver.n_ctrl_dirichlet > 0:
+                    for m in range(num_steps):
+                        u_vals.append(float(u_dirichlet_funcs_time[m][0].x.array[0]))
+                
+                # Handle empty arrays for logging
+                muL_str = f"{np.mean(muL_vals):.1e}" if muL_vals else "0.0e+00"
+                muU_str = f"{np.mean(muU_vals):.1e}" if muU_vals else "0.0e+00"
+                violL_str = f"{np.mean(violL_vals):.1f}" if violL_vals else "0.0"
+                violU_str = f"{np.mean(violU_vals):.1f}" if violU_vals else "0.0"
+                T_min_str = f"{np.min(T_mean_vals):.1f}" if T_mean_vals else "0.0"
+                T_max_str = f"{np.max(T_mean_vals):.1f}" if T_mean_vals else "0.0"
+                u_min_str = f"{np.min(u_vals):.0f}" if u_vals else "0"
+                u_max_str = f"{np.max(u_vals):.0f}" if u_vals else "0"
+                
+                logger.info(f"SC {sc_iter}: feas={feas_inf:.2e} dmu={delta_mu:.2e} | muL={muL_str} muU={muU_str} | violL={violL_str}° violU={violU_str}° | T=[{T_min_str},{T_max_str}]° | u=[{u_min_str},{u_max_str}]")
 
         Y_mu = solver.solve_forward(
             u_neumann_funcs_time,
@@ -866,6 +939,12 @@ def optimization_time_dependent(args):
             Y_mu,
             T_ref,
         )
+
+        # Guard against numerical explosion: if penalty is too large, stop
+        if J_mu > 1e15:
+            if rank == 0:
+                print(f"\n[WARNING] Penalty exploded (J={J_mu:.2e}). Switching to mean constraint or reducing threshold recommended.")
+            break
 
         if rank == 0:
             logger.debug(
@@ -915,8 +994,11 @@ def optimization_time_dependent(args):
         Y_final_all,
         T_ref,
     )
-    # ============================================================
-    # L2 error vs time on Omega_c (FINAL trajectory only)
+    
+    # Save temperature time series if requested
+    if hasattr(args, 'output_timeseries') and args.output_timeseries:
+        solver.compute_temperature_timeseries_from_Y(Y_final_all)
+        solver.save_temperature_timeseries(args.output_timeseries)
     # writes: l2_error_Omegac.dat
     # ============================================================
     from dolfinx.fem import form, assemble_scalar
@@ -1263,7 +1345,7 @@ def optimization_time_dependent(args):
             args,
             num_steps,
             target_boxes,
-        target_boundaries,
+            target_boundaries,
             ctrl_distributed_boxes,
         )
 

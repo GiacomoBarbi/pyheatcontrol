@@ -62,6 +62,12 @@ def build_parser():
     parser.add_argument("--u-min", type=float, default=25.0)
     parser.add_argument("--u-max", type=float, default=250.0)
     parser.add_argument("--check-grad", action="store_true")
+    parser.add_argument(
+        "--check-grad-seed",
+        type=int,
+        default=1,
+        help="Seed used by finite-difference gradient check (default: 1)",
+    )
     parser.add_argument("--beta-u", type=float, default=0.0)
     parser.add_argument(
         "--dirichlet-spatial-reg", type=str, default="L2", choices=["L2", "H1"]
@@ -71,10 +77,14 @@ def build_parser():
     parser.add_argument(
         "--sc-type", type=str, default="lower", choices=["lower", "upper", "box"]
     )
-    parser.add_argument("--sc-lower", type=float, default=None)
-    parser.add_argument("--sc-upper", type=float, default=None)
+    parser.add_argument("--sc-lower", type=float, default=25.0)
+    parser.add_argument("--sc-upper", type=float, default=1e10)
     parser.add_argument("--sc-start-time", type=float, default=None)
     parser.add_argument("--sc-end-time", type=float, default=None)
+    parser.add_argument("--sc-use-mean", action="store_true", default=False,
+                        help="Use mean temperature constraint instead of cell-wise")
+    parser.add_argument("--sc-no-quadratic-penalty", action="store_true", default=False,
+                        help="Use only linear penalty μ*viol (no quadratic term)")
     parser.add_argument("--constraint-zone", action="append", default=[])
 
     # Gradient descent
@@ -87,6 +97,8 @@ def build_parser():
     parser.add_argument("--output-freq", type=int, default=1)
     parser.add_argument("--output-dir", type=str, default="resu")
     parser.add_argument("--no-vtk", action="store_true")
+    parser.add_argument("--output-timeseries", type=str, default=None,
+                        help="Save T_mean and T_max time series to CSV file")
 
     # Linear solver (state/adjoint)
     parser.add_argument(

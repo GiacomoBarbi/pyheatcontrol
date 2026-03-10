@@ -1,11 +1,11 @@
 import logging
 from petsc4py import PETSc
-from ufl import dx, TestFunction
+from ufl import dx, TestFunction, dx as ufl_dx
 import numpy as np
 from mpi4py import MPI
 import math
 
-from dolfinx.fem import form, Function, Constant, assemble_scalar, dirichletbc
+from dolfinx.fem import form, Function, Constant, assemble_scalar, dirichletbc, functionspace
 from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting, set_bc
 
 from pyheatcontrol.logging_config import logger
@@ -34,6 +34,12 @@ def solve_forward_impl(
     T.x.array[:] = self.T_ambient
     T_old.x.array[:] = self.T_ambient
     Y_all.append(T.copy())
+
+    # Time series storage for T_mean (target zone) and T_max (whole domain)
+    # These will be computed from Y_final_all after optimization completes
+    self.tmean_timeseries = np.zeros(self.num_steps + 1)
+    self.tmax_timeseries = np.zeros(self.num_steps + 1)
+    self.time_axis = np.array([i * self.dt for i in range(self.num_steps + 1)])
 
     # -------------------------------------------------
     # Dirichlet BC placeholders (ONE-TIME) + assemble A once
@@ -85,15 +91,19 @@ def solve_forward_impl(
     for i, mid in enumerate(self.neumann_marker_ids):
         L_rhs_ufl += self.q_neumann_funcs[i] * v * self.ds_neumann(mid)
 
-    # Prescribed (non-homogeneous) Neumann: k ∂_n T = g
+    # Precompile RHS form (control + distributed terms)
+    rhs_form = form(L_rhs_ufl)
+    b_prescribed = None
+    rhs_form_prescribed = None
     if getattr(self, "n_neumann_bc", 0) > 0:
+        # Keep prescribed Neumann on a separate form to avoid mixing different
+        # subdomain_data in a single UFL form.
+        L_rhs_prescribed = 0
         for i in range(self.n_neumann_bc):
             mid = self.neumann_prescribed_marker_ids[i]
             g_i = self.neumann_prescribed_constants[i]
-            L_rhs_ufl += g_i * v * self.ds_neumann_prescribed(mid)
-
-    # Precompile RHS form
-    rhs_form = form(L_rhs_ufl)
+            L_rhs_prescribed += g_i * v * self.ds_neumann_prescribed(mid)
+        rhs_form_prescribed = form(L_rhs_prescribed)
 
     for step in range(self.num_steps):
 
@@ -252,10 +262,18 @@ def solve_forward_impl(
         # Assemble RHS (allocate on first step, reuse thereafter)
         if step == 0:
             b = assemble_vector(rhs_form)
+            if rhs_form_prescribed is not None:
+                b_prescribed = assemble_vector(rhs_form_prescribed)
+                b.axpy(1.0, b_prescribed)
         else:
             with b.localForm() as b_loc:
                 b_loc.set(0.0)
             assemble_vector(b, rhs_form)
+            if rhs_form_prescribed is not None:
+                with b_prescribed.localForm() as bp_loc:
+                    bp_loc.set(0.0)
+                assemble_vector(b_prescribed, rhs_form_prescribed)
+                b.axpy(1.0, b_prescribed)
 
         apply_lifting(b, [self.a_state_compiled], bcs=[bc_list])
         b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
@@ -284,3 +302,36 @@ def solve_forward_impl(
 
     self.Y_all = Y_all
     return Y_all
+
+
+def _compute_zone_temperature(self, T):
+    """Compute T_mean over target zone and T_max over whole domain."""
+    comm = self.domain.comm
+    
+    # T_max over whole domain
+    local_T = T.x.array
+    if local_T.size > 0:
+        local_max = float(local_T.max())
+        local_min = float(local_T.min())
+    else:
+        local_max = -np.inf
+        local_min = np.inf
+    global_max = comm.allreduce(local_max, op=MPI.MAX)
+    global_min = comm.allreduce(local_min, op=MPI.MIN)
+    
+    # T_mean over target zone
+    if hasattr(self, '_chi_dg0') and self._chi_dg0 is not None:
+        chi_dg0 = self._chi_dg0
+        zone_integral_local = assemble_scalar(form(T * chi_dg0 * ufl_dx))
+        chi_integral_local = assemble_scalar(form(chi_dg0 * ufl_dx))
+        zone_integral = comm.allreduce(zone_integral_local, op=MPI.SUM)
+        chi_integral = comm.allreduce(chi_integral_local, op=MPI.SUM)
+        
+        if chi_integral > 1e-12:
+            tmean = zone_integral / chi_integral
+        else:
+            tmean = self.T_ambient
+    else:
+        tmean = self.T_ambient
+    
+    return tmean, global_max

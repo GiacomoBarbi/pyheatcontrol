@@ -97,10 +97,12 @@ J = α_track * J_track + α_u * J_reg_L2 + γ_u * J_reg_H1_time + β_u * J_reg_H
 | Parameter | Typical value | Effect |
 |-----------|--------------|--------|
 | `sc-type` | lower/upper/box | Constraint type |
-| `sc-lower` | 25.0 | Lower temperature bound (°C) |
-| `sc-upper` | 200.0 | Upper temperature bound (°C) |
+| `sc-lower` | 25.0 | Lower temperature bound (°C). CLI default: `25.0` |
+| `sc-upper` | 200.0 | Upper temperature bound (°C). CLI default: `1e10` (effectively inactive unless specified) |
 | `beta` | 1e3 | Penalty parameter for augmented Lagrangian |
 | `sc-maxit` | 2-5 | Number of SC iterations |
+| `sc-use-mean` | off | Enforce constraint on mean temperature over constraint zone instead of cell-wise |
+| `sc-no-quadratic-penalty` | off | Use linear penalty term only (`μ * violation`) |
 
 ### Optimization
 
@@ -196,3 +198,11 @@ ruff format .
 ```bash
 pyheatcontrol --help
 ```
+
+Useful flags in addition to the core parameters:
+
+- `--output-timeseries <file.csv>`: save `time,T_mean,T_min,T_max` to CSV.
+- `--check-grad-seed <int>`: set random seed used by finite-difference gradient check.
+- `--neumann-bc side,tmin,tmax,value`: prescribe boundary flux `k∂_n T = value` on a segment.
+- `--sc-use-mean`: apply state constraint to zone mean temperature.
+- `--sc-no-quadratic-penalty`: disable quadratic penalty term in augmented Lagrangian.

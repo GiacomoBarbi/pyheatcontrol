@@ -97,6 +97,54 @@ def solve_adjoint_impl(self, Y_all, T_ref):
         muU_ph.x.array[:] = self.mu_upper_time[m]
         muU_ph.x.scatter_forward()
 
+        # Add quadratic penalty term: beta * viol
+        # For consistency with compute_cost: the adjoint includes β * viol as additional multiplier
+        use_quadratic = getattr(self, 'sc_quadratic_penalty', True)
+        if use_quadratic and hasattr(self, 'beta_sc'):
+            n_local = muL_ph.function_space.dofmap.index_map.size_local
+            mask = self.sc_marker[:n_local] if hasattr(self, 'sc_marker') else np.zeros(n_local)
+            
+            # Project current temperature to DG0
+            self._T_cell.interpolate(y_ph)
+            T_arr = self._T_cell.x.array[:n_local]
+            
+            if getattr(self, 'sc_use_mean', False):
+                # Mean constraint: compute mean violation
+                if mask.sum() > 0:
+                    T_mean = (T_arr * mask).sum() / mask.sum()
+                    if self.sc_type in ["lower", "box"] and self.sc_lower is not None:
+                        violL = max(0.0, self.sc_lower - T_mean)
+                        muL_ph.x.array[:n_local] += self.beta_sc * violL * mask[:n_local]
+                    if self.sc_type in ["upper", "box"] and self.sc_upper is not None:
+                        violU = max(0.0, T_mean - self.sc_upper)
+                        muU_ph.x.array[:n_local] += self.beta_sc * violU * mask[:n_local]
+                    muL_ph.x.scatter_forward()
+                    muU_ph.x.scatter_forward()
+            else:
+                # Cell-wise constraint: add beta * viol to each cell
+                if self.sc_type in ["lower", "box"] and self.sc_lower is not None:
+                    violL = np.maximum(0.0, self.sc_lower - T_arr) * mask
+                    muL_ph.x.array[:n_local] += self.beta_sc * violL[:n_local]
+                if self.sc_type in ["upper", "box"] and self.sc_upper is not None:
+                    violU = np.maximum(0.0, T_arr - self.sc_upper) * mask
+                    muU_ph.x.array[:n_local] += self.beta_sc * violU[:n_local]
+                muL_ph.x.scatter_forward()
+                muU_ph.x.scatter_forward()
+
+        # If using mean constraint, replace cell-wise multipliers with mean values
+        if getattr(self, 'sc_use_mean', False):
+            n_local = muL_ph.function_space.dofmap.index_map.size_local
+            mask = self.sc_marker[:n_local]
+            muL_arr = muL_ph.x.array[:n_local]
+            muU_arr = muU_ph.x.array[:n_local]
+            if mask.sum() > 0:
+                muL_mean = (muL_arr * mask).sum() / mask.sum()
+                muU_mean = (muU_arr * mask).sum() / mask.sum()
+                muL_ph.x.array[:n_local] = muL_mean * mask
+                muU_ph.x.array[:n_local] = muU_mean * mask
+                muL_ph.x.scatter_forward()
+                muU_ph.x.scatter_forward()
+
         # Select correct precompiled form (trapezoidal weight)
         L_form = L_adj_form_w05 if (m == 0 or m == self.num_steps) else L_adj_form_w1
 

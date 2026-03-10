@@ -658,7 +658,7 @@ def tgrad_impl(self, u):
 
 
 def update_multiplier_mu_impl(
-    self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step
+    self, Y_all, sc_type, sc_lower, sc_upper, beta, sc_start_step, sc_end_step, sc_use_mean=False
 ):
     """
     Moreau–Yosida update for PATH constraints over time window [sc_start_step, sc_end_step].
@@ -670,6 +670,7 @@ def update_multiplier_mu_impl(
         sc_lower, sc_upper: Temperature bounds
         beta: Penalty parameter
         sc_start_step, sc_end_step: Time window indices
+        sc_use_mean: If True, use mean temperature over constraint zone instead of cell-wise
 
     Returns:
         delta_mu: Max change in multipliers
@@ -699,56 +700,105 @@ def update_multiplier_mu_impl(
         muL_old = self.mu_lower_time[m].copy()
         muU_old = self.mu_upper_time[m].copy()
 
-        # Compute violations (DG0 arrays)
-        violL = np.zeros_like(T_cell.x.array)
-        violU = np.zeros_like(T_cell.x.array)
+        if sc_use_mean:
+            # Mean constraint: compute mean temperature over constraint zone
+            mask_sum = mask.sum()
+            if mask_sum > 0:
+                T_mean = (T_cell.x.array[:n_local] * mask[:n_local]).sum() / mask_sum
+            else:
+                T_mean = self.T_ambient
 
-        if sc_type in ["lower", "box"]:
-            violL = np.maximum(0.0, sc_lower - T_cell.x.array)
-        if sc_type in ["upper", "box"]:
-            violU = np.maximum(0.0, T_cell.x.array - sc_upper)
+            # Compute violations (mean-based)
+            violL = 0.0
+            violU = 0.0
+            if sc_type in ["lower", "box"]:
+                if sc_lower is not None:
+                    violL = max(0.0, sc_lower - T_mean)
+            if sc_type in ["upper", "box"]:
+                if sc_upper is not None:
+                    violU = max(0.0, T_mean - sc_upper)
 
-        # Apply mask
-        violL *= mask
-        violU *= mask
+            # Moreau–Yosida update using mean multipliers
+            muL_mean_old = muL_old[:n_local].mean() if n_local > 0 else 0.0
+            muU_mean_old = muU_old[:n_local].mean() if n_local > 0 else 0.0
+            muL_mean_new = muL_mean_old + beta * violL
+            muU_mean_new = muU_mean_old + beta * violU
+            muL_mean_new = max(0.0, muL_mean_new)
+            muU_mean_new = max(0.0, muU_mean_new)
 
-        # Moreau–Yosida update
-        muL_new = muL_old + beta * violL
-        muU_new = muU_old + beta * violU
-        muL_new = np.maximum(0.0, muL_new) * mask
-        muU_new = np.maximum(0.0, muU_new) * mask
+            # Apply mean multiplier uniformly to constrained cells
+            muL_new = np.zeros_like(muL_old)
+            muU_new = np.zeros_like(muU_old)
+            muL_new[:n_local] = muL_mean_new * mask[:n_local]
+            muU_new[:n_local] = muU_mean_new * mask[:n_local]
+
+            # Track convergence measures (use mean change)
+            dL = abs(muL_mean_new - muL_mean_old)
+            dU = abs(muU_mean_new - muU_mean_old)
+            delta_mu_max = max(delta_mu_max, dL, dU)
+
+            vL = violL
+            vU = violU
+            feas_inf_max = max(feas_inf_max, vL, vU)
+
+            # Debug output
+            if self.domain.comm.rank == 0 and (m == sc_start_step or m == sc_end_step):
+                t_m = m * self.dt
+                logger.debug(
+                    f"SC-PATH (MEAN) t={t_m:.1f}s (m={m}): T_mean={T_mean:.2f}°C, violL={vL:.2e}, violU={vU:.2e}, muL_mean={muL_mean_new:.2e}, muU_mean={muU_mean_new:.2e}"
+                )
+        else:
+            # Original cell-wise constraint
+            # Compute violations (DG0 arrays)
+            violL = np.zeros_like(T_cell.x.array)
+            violU = np.zeros_like(T_cell.x.array)
+
+            if sc_type in ["lower", "box"]:
+                if sc_lower is not None:
+                    violL = np.maximum(0.0, sc_lower - T_cell.x.array)
+            if sc_type in ["upper", "box"]:
+                if sc_upper is not None:
+                    violU = np.maximum(0.0, T_cell.x.array - sc_upper)
+
+            # Apply mask
+            violL *= mask
+            violU *= mask
+
+            # Moreau–Yosida update
+            muL_new = muL_old + beta * violL
+            muU_new = muU_old + beta * violU
+            muL_new = np.maximum(0.0, muL_new) * mask
+            muU_new = np.maximum(0.0, muU_new) * mask
+
+            # Track convergence measures
+            dL = float(np.max(np.abs(muL_new - muL_old))) if muL_new.size else 0.0
+            dU = float(np.max(np.abs(muU_new - muU_old))) if muU_new.size else 0.0
+            delta_mu_max = max(delta_mu_max, dL, dU)
+
+            vL = float(np.max(violL)) if violL.size else 0.0
+            vU = float(np.max(violU)) if violU.size else 0.0
+            feas_inf_max = max(feas_inf_max, vL, vU)
+
+            # Debug output for first and last step in window
+            if self.domain.comm.rank == 0 and (m == sc_start_step or m == sc_end_step):
+                active = mask > 0.5
+                n_active = int(np.sum(active))
+                if n_active > 0:
+                    Tmin_sc = float(np.min(T_cell.x.array[active]))
+                    Tmax_sc = float(np.max(T_cell.x.array[active]))
+                else:
+                    Tmin_sc = Tmax_sc = float("nan")
+
+                muL_max = float(np.max(muL_new)) if muL_new.size else 0.0
+                muU_max = float(np.max(muU_new)) if muU_new.size else 0.0
+                t_m = m * self.dt
+                logger.debug(
+                    f"SC-PATH t={t_m:.1f}s (m={m}): T∈[{Tmin_sc:.2f}, {Tmax_sc:.2f}]°C, violL={vL:.2e}, violU={vU:.2e}, μL_max={muL_max:.2e}, μU_max={muU_max:.2e}"
+                )
 
         # Write back (DG0)
         self.mu_lower_time[m, :] = muL_new
         self.mu_upper_time[m, :] = muU_new
-        # scatter not needed for numpy
-        # scatter not needed for numpy
-
-        # Track convergence measures
-        dL = float(np.max(np.abs(muL_new - muL_old))) if muL_new.size else 0.0
-        dU = float(np.max(np.abs(muU_new - muU_old))) if muU_new.size else 0.0
-        delta_mu_max = max(delta_mu_max, dL, dU)
-
-        vL = float(np.max(violL)) if violL.size else 0.0
-        vU = float(np.max(violU)) if violU.size else 0.0
-        feas_inf_max = max(feas_inf_max, vL, vU)
-
-        # Debug output for first and last step in window
-        if self.domain.comm.rank == 0 and (m == sc_start_step or m == sc_end_step):
-            active = mask > 0.5
-            n_active = int(np.sum(active))
-            if n_active > 0:
-                Tmin_sc = float(np.min(T_cell.x.array[active]))
-                Tmax_sc = float(np.max(T_cell.x.array[active]))
-            else:
-                Tmin_sc = Tmax_sc = float("nan")
-
-            muL_max = float(np.max(muL_new)) if muL_new.size else 0.0
-            muU_max = float(np.max(muU_new)) if muU_new.size else 0.0
-            t_m = m * self.dt
-            logger.debug(
-                f"SC-PATH t={t_m:.1f}s (m={m}): T∈[{Tmin_sc:.2f}, {Tmax_sc:.2f}]°C, violL={vL:.2e}, violU={vU:.2e}, μL_max={muL_max:.2e}, μU_max={muU_max:.2e}"
-            )
 
     # Summary
     if self.domain.comm.rank == 0:
